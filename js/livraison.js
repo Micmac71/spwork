@@ -183,6 +183,7 @@
       h('div', { class: 'pane-head' }, P.titre,
         P.selCh = h('select', { class: 'input', id: 'lv-chauffeur', style: 'width:auto;max-width:260px', 'aria-label': 'Chauffeur de la tournée', onchange: () => { S.chauffeur = P.selCh.value; S.sel = null; if (S.map) S.map.fit(); refresh(); } }),
         P.btnAff = h('button', { class: 'btn', type: 'button', onclick: () => { const T = computeTour(); affecter(T.stops.concat(T.sans), true); } }, SP.icon('users'), 'Affecter'),
+        h('button', { class: 'btn', type: 'button', onclick: importPDF }, SP.icon('doc'), 'Lire des BL en PDF'),
         h('button', { class: 'btn', type: 'button', onclick: () => editBL(null) }, SP.icon('plus'), 'Ajouter un BL'),
         P.btnOpt = h('button', { class: 'btn primary', type: 'button', onclick: optimiser }, SP.icon('route'), 'Optimiser le circuit')),
       P.stats, P.infos,
@@ -266,8 +267,8 @@
       h('div', { class: 'steps' },
         h('div', { class: 'step' }, h('b', { text: 'Importer vos clients' }), h('p', { text: 'Un fichier Excel ou CSV avec nom, adresse, code postal et ville. Un client peut avoir plusieurs points de livraison.' }),
           h('button', { class: 'btn sm', type: 'button', onclick: importClients }, SP.icon('upload'), 'Importer')),
-        h('div', { class: 'step' }, h('b', { text: 'Ajouter les bons de livraison' }), h('p', { text: 'Au fur et à mesure, à la main ou par import. Le lieu de livraison reste modifiable pour chaque BL.' }),
-          h('button', { class: 'btn sm', type: 'button', onclick: () => editBL(null) }, SP.icon('plus'), 'Nouveau BL')),
+        h('div', { class: 'step' }, h('b', { text: 'Ajouter les bons de livraison' }), h('p', { text: 'Déposez les BL en PDF sortis de Cegid PMI : le client et l\'adresse de livraison sont créés tout seuls. Le lieu reste modifiable pour chaque BL.' }),
+          h('button', { class: 'btn sm', type: 'button', onclick: importPDF }, SP.icon('doc'), 'Lire des BL en PDF')),
         h('div', { class: 'step' }, h('b', { text: 'Optimiser le circuit' }), h('p', { text: 'SP WORK calcule l\'ordre de passage le plus court depuis le dépôt et le trace sur la carte.' }))),
       h('div', { class: 'row' },
         h('button', { class: 'btn', type: 'button', onclick: chargerEssai }, 'Charger un jeu d\'essai fictif'),
@@ -282,8 +283,9 @@
     P.liste = h('div', { class: 'stack' });
     S.el.body.appendChild(h('div', { class: 'pane' },
       h('div', { class: 'pane-head' }, h('h2', { text: 'Bons de livraison' }), P.seg,
-        h('button', { class: 'btn', type: 'button', onclick: importBL }, SP.icon('upload'), 'Importer'),
-        h('button', { class: 'btn primary', type: 'button', onclick: () => editBL(null) }, SP.icon('plus'), 'Nouveau BL')),
+        h('button', { class: 'btn', type: 'button', onclick: importBL }, SP.icon('upload'), 'Importer Excel'),
+        h('button', { class: 'btn', type: 'button', onclick: () => editBL(null) }, SP.icon('plus'), 'Nouveau BL'),
+        h('button', { class: 'btn primary', type: 'button', onclick: importPDF }, SP.icon('doc'), 'Lire des BL en PDF')),
       P.liste));
   }
   function ligneBL(id, bl) {
@@ -479,6 +481,7 @@
           s.bls.map(b => h('span', { class: 'pill neutral', text: 'BL ' + b.numero })),
           (colis || poids) ? h('span', { class: 'pill neutral num', text: [colis ? colis + ' colis' : '', poids ? SP.fmt(poids) + ' kg' : ''].filter(Boolean).join(' · ') }) : null,
           pillStop(s)),
+        s.bls.filter(b => contenuBL(b)).map(b => h('div', { class: 'pointbox', style: 'padding:8px 10px;gap:4px' }, h('b', { class: 'small', text: 'BL ' + b.numero }), contenuBL(b))),
         s.bls.filter(b => b.note).map(b => h('div', { class: 'notice info', text: 'BL ' + b.numero + ' : ' + b.note })),
         s.fait ? h('div', { class: 'small muted', text: [frHeure(l0.at), l0.signataire ? 'réceptionné par ' + l0.signataire : '', l0.reserves ? 'réserves : ' + l0.reserves : '', l0.commentaire || ''].filter(Boolean).join(' · ') }) : null,
         h('div', { class: 'row' },
@@ -690,6 +693,7 @@
         h('label', { class: 'field' }, h('span', { text: 'Départ' }), siteSel),
         h('label', { class: 'field' }, h('span', { text: 'Chauffeur' }), chSel)),
       blocLivraison(b), zClient, zLieu,
+      contenuBL(b) ? h('div', { class: 'pointbox' }, h('b', { text: 'Contenu du BL' }), contenuBL(b)) : null,
       h('div', { class: 'fgrid' }, inp('colis', 'Nombre de colis', { inputmode: 'numeric' }), inp('poids', 'Poids (kg)', { inputmode: 'decimal' }),
         h('label', { class: 'field' }, h('span', { text: 'Statut' }), statSel)),
       inp('note', 'Note pour le chauffeur'));
@@ -736,6 +740,93 @@
       blocUtilisateurs());
     m.setActions(h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Annuler'),
       h('button', { class: 'btn primary', type: 'button', onclick: async () => { if (await store.set('reglages', 'livraison', r)) { SP.toast('Réglages enregistrés.'); m.close(); } } }, 'Enregistrer'));
+  }
+
+  /* ---------- lecture de BL en PDF (Cegid PMI) ---------- */
+  function contenuBL(b) {
+    if (!(b.lignes && b.lignes.length) && !b.commande) return null;
+    return h('div', { class: 'small' },
+      b.commande ? h('div', { class: 'muted', text: 'Commande client ' + b.commande }) : null,
+      (b.lignes || []).map(l => h('div', { text: (l.qte ? SP.fmt(l.qte) + ' × ' : '') + l.des })));
+  }
+  function importPDF() {
+    const m = SP.modal({ titre: 'Lire des BL en PDF', large: true });
+    const fileIn = h('input', { type: 'file', id: 'pdf-files', class: 'input', accept: 'application/pdf,.pdf,image/*', multiple: true });
+    const zone = h('div', { class: 'stack' });
+    m.body.append(
+      h('div', { class: 'notice info', text: 'Choisissez un ou plusieurs BL sortis de Cegid PMI. Un PDF enregistré depuis Cegid (« Imprimer en PDF ») est lu exactement. Un BL scanné ou photographié est lu par reconnaissance de caractères : relisez-le avant d\'enregistrer. Les BL partiront du dépôt de ' + SITES[S.site].nom + '.' }),
+      h('label', { class: 'field' }, h('span', { text: 'Fichiers PDF ou photos' }), fileIn), zone);
+    let liste = [];
+    fileIn.addEventListener('change', async () => {
+      const files = [...fileIn.files]; if (!files.length) return;
+      const fill = h('i'), txt = h('div', { class: 'small muted', text: 'Préparation…' });
+      zone.replaceChildren(h('div', { class: 'bar' }, fill), txt); m.setActions();
+      try { await geo.load(); } catch (e) { /* sans localisation */ }
+      const lus = await SP.blpdf.lire(files, (nom, i, n) => { txt.textContent = 'Lecture de ' + nom + ' (' + i + ' / ' + n + ')'; fill.style.width = Math.round(100 * (i - 0.5) / n) + '%'; });
+      for (const r of lus) { r.garder = r.source !== 'erreur' && !!r.numero; r.existe = r.numero ? !!(await store.get('bls', blId(r.numero))) : false; }
+      liste = liste.filter(x => !lus.some(y => y.numero && y.numero === x.numero)).concat(lus);
+      fileIn.value = ''; draw();
+    });
+    function draw() {
+      const cartes = liste.map((r, n) => {
+        if (r.source === 'erreur') return h('div', { class: 'notice', text: r.fichier + ' : fichier illisible. Vérifiez qu\'il s\'agit bien d\'un PDF ou d\'une image.' });
+        const f = (k, label, extra) => { const i = h('input', Object.assign({ class: 'input', id: 'pdf' + n + '-' + k, value: r[k] || '', oninput: () => { r[k] = i.value.trim(); if (k === 'cp' || k === 'ville') loc(); } }, extra || {})); return h('label', { class: 'field' }, h('span', { text: label }), i); };
+        const etat = h('span', { class: 'pill neutral' });
+        const loc = () => { const g = geo.locate(r.cp, r.ville); etat.className = 'pill ' + (g ? 'neutral' : 'warn'); etat.textContent = g ? 'Localisé : ' + g.commune : 'Commune introuvable'; };
+        loc();
+        const cb = h('input', { type: 'checkbox', id: 'pdf' + n + '-garder', checked: r.garder, onchange: () => { r.garder = cb.checked; boutons(); } });
+        const contenu = h('textarea', { class: 'input', id: 'pdf' + n + '-contenu', value: (r.lignes || []).map(l => (l.qte ? SP.fmt(l.qte) + ' × ' : '') + l.des).join('\n'), oninput: () => { r.lignes = contenu.value.split('\n').map(s => s.trim()).filter(Boolean).map(s => { const q = s.match(/^(\d+(?:[.,]\d+)?)\s*[×x]\s*(.+)$/); return q ? { qte: Number(q[1].replace(',', '.')), des: q[2] } : { qte: 0, des: s }; }); } });
+        return h('div', { class: 'pointbox' },
+          h('div', { class: 'row' }, h('label', { class: 'row grow', for: 'pdf' + n + '-garder' }, cb, h('b', { text: r.fichier + (r.page > 1 ? ' (page ' + r.page + ')' : '') })),
+            h('span', { class: 'pill ' + (r.source === 'pdf' ? 'ok' : 'warn'), text: r.source === 'pdf' ? 'PDF lu exactement' : 'Scan : à relire' }),
+            r.existe ? h('span', { class: 'pill neutral', text: 'Déjà présent : sera mis à jour' }) : null),
+          h('div', { class: 'fgrid' }, f('numero', 'N° de BL *'), f('date', 'Date de livraison', { type: 'date' }), f('commande', 'Commande client')),
+          h('div', { class: 'fgrid' }, f('client', 'Client (facturation) *'), f('livNom', 'Lieu de livraison')),
+          f('adresse', 'Adresse de livraison'),
+          h('div', { class: 'fgrid' }, f('cp', 'Code postal', { inputmode: 'numeric' }), f('ville', 'Ville'), f('tel', 'Téléphone')),
+          h('div', { class: 'row' }, etat),
+          h('label', { class: 'field' }, h('span', { text: 'Contenu (une ligne par article)' }), contenu));
+      });
+      zone.replaceChildren(...(cartes.length ? cartes : [h('div', { class: 'notice', text: 'Aucun BL reconnu dans ces fichiers.' })]));
+      boutons();
+    }
+    function boutons() {
+      const n = liste.filter(r => r.garder).length;
+      m.setActions(h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Annuler'),
+        h('button', { class: 'btn primary', type: 'button', disabled: !n, onclick: enregistrer }, 'Enregistrer ' + n + ' BL'));
+    }
+    async function enregistrer() {
+      const bons = liste.filter(r => r.garder);
+      const manque = bons.find(r => !r.numero || !(r.client || r.livNom));
+      if (manque) { SP.toast('Complétez le numéro et le client de « ' + manque.fichier + ' », ou décochez-le.', true); return; }
+      m.setActions();
+      const parNom = new Map(); S.clients.forEach((c, id) => parNom.set(SP.norm(c.nom), id));
+      const clients = new Map(), jobsC = [], jobsB = []; let nvClients = 0, nvPoints = 0;
+      for (const r of bons) {
+        const nom = r.client || r.livNom, cle = SP.norm(nom);
+        let cid = parNom.get(cle), c = cid && (clients.get(cid) || JSON.parse(JSON.stringify(S.clients.get(cid))));
+        if (!c) { cid = store.newId(); c = { nom, code: '', points: [] }; parNom.set(cle, cid); nvClients++; clients.set(cid, c); }
+        c.points = c.points || [];
+        const cp = /^\d{4}$/.test(r.cp) ? '0' + r.cp : r.cp;
+        let p = c.points.find(x => String(x.cp) === String(cp) && SP.norm(x.adresse) === SP.norm(r.adresse));
+        if (!p) {
+          const g = geo.locate(cp, r.ville);
+          p = Object.assign({ id: SP.uid(), libelle: r.livNom && SP.norm(r.livNom) !== cle ? r.livNom : (c.points.length ? 'Point ' + (c.points.length + 1) : 'Principal'), adresse: r.adresse, cp, ville: r.ville, tel: r.tel || '', geo: g ? 'commune' : 'aucun' }, g ? { lat: g.lat, lon: g.lon, commune: g.commune } : {});
+          c.points.push(p); c.maj = new Date().toISOString(); clients.set(cid, c); nvPoints++;
+        } else if (r.tel && !p.tel) { p.tel = r.tel; clients.set(cid, c); }
+        const id = blId(r.numero), ancien = (await store.get('bls', id)) || {};
+        const b = Object.assign({ statut: 'a-livrer', chauffeur: '', site: S.site, note: '' }, ancien, { numero: r.numero, date: r.date || ancien.date || S.date, clientId: cid, clientNom: c.nom, pointId: p.id, commande: r.commande || '', lignes: r.lignes || [], colis: r.colis || ancien.colis || '', palettes: r.palettes || '', origine: r.source, maj: new Date().toISOString() });
+        delete b.lieu;
+        jobsB.push(() => store.set('bls', id, b, true));
+      }
+      clients.forEach((c, id) => jobsC.push(() => store.set('clients', id, c, true)));
+      const ok = (await store.batch(jobsC)) + (await store.batch(jobsB)), total = jobsC.length + jobsB.length;
+      const dates = [...new Set(bons.map(r => r.date).filter(Boolean))].sort();
+      zone.replaceChildren(h('div', { class: ok < total ? 'notice' : 'notice info', text: ok < total ? 'Enregistrement incomplet (' + ok + ' sur ' + total + ') : réessayez.' : bons.length + ' BL enregistré(s)' + (nvClients ? ', ' + nvClients + ' nouveau(x) client(s)' : '') + (nvPoints ? ', ' + nvPoints + ' point(s) de livraison ajouté(s)' : '') + '. Dates de livraison : ' + dates.map(d => SP.frDate(d, true)).join(', ') + '.' }));
+      liste = [];
+      m.setActions(dates.length ? h('button', { class: 'btn', type: 'button', onclick: () => { m.close(); S.tab = 'tournee'; S.chauffeur = ''; setDate(dates[0]); showTab(); } }, 'Voir la tournée du ' + SP.frDate(dates[0], true)) : null,
+        h('button', { class: 'btn primary', type: 'button', onclick: () => m.close() }, 'Fermer'));
+    }
   }
 
   /* ---------- imports ---------- */
