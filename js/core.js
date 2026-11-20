@@ -100,6 +100,7 @@
     layer.addEventListener('pointerdown', e => { if (e.target === layer && !opts.verrou) api.close(); });
     const onKey = e => { if (e.key === 'Escape' && layer === document.getElementById('sp-layers').lastChild) api.close(); };
     document.addEventListener('keydown', onKey);
+    body.append = function () { for (const x of arguments) if (x != null && x !== false) Element.prototype.append.call(body, x); };
     const api = {
       body, foot, sheet,
       setTitle: t => { title.textContent = t; },
@@ -121,113 +122,113 @@
     });
   };
 
-  /* ---------- stockage partagé ---------- */
-  const store = SP.store = { mode: 'attente', db: null };
-  const mem = {};            // repli en mémoire si le stockage partagé est indisponible
-  const memSubs = new Set();
-  const queues = new Map();  // une écriture à la fois par document
-  let readOnlyWarned = false;
-
-  store.ready = (async function () {
-    let db = null;
-    try { if (window.claude && typeof window.claude.use === 'function') db = await window.claude.use('db'); } catch (e) { db = null; }
-    store.db = db; store.mode = db ? 'partage' : 'local';
-    renderStatus();
-  })();
+  /* ---------- stockage partagé (Supabase) avec repli en mémoire pour l'essai ---------- */
+  const cfg = window.SP_CONFIG || {};
+  const sb = SP.sb = (cfg.url && cfg.cle && window.supabase) ? window.supabase.createClient(cfg.url, cfg.cle) : null;
+  const store = SP.store = { mode: sb ? 'partage' : 'local' };
+  const COLS = { clients: ['demo'], bls: ['date', 'statut', 'site', 'chauffeur', 'demo'], tournees: ['date', 'site', 'chauffeur'], reglages: [], preuves: ['bl', 'date'] };
+  const mem = {}, memSubs = new Set(), live = new Set(), touchT = {};
+  let chanN = 0;
 
   function memColl(c) { return mem[c] || (mem[c] = new Map()); }
-  function match(data, where) {
-    if (!where) return true;
-    const v = data[where[0]];
-    return where[1] === '==' ? v === where[2] : true;
-  }
-  function memEmit(coll) {
-    memSubs.forEach(s => { if (s.q.coll === coll) memDeliver(s); });
-  }
+  function match(data, where) { return !where || data[where[0]] === where[2]; }
+  function memEmit(coll) { memSubs.forEach(s => { if (s.q.coll === coll) memDeliver(s); }); }
   function memDeliver(s) {
     const out = new Map();
     memColl(s.q.coll).forEach((d, id) => { if (match(d, s.q.where)) out.set(id, d); });
     s.cb(out, { ok: true });
   }
+  function clean(data) { return JSON.parse(JSON.stringify(data)); }
+  function toRow(coll, id, data) {
+    const r = { id, data, maj: new Date().toISOString() };
+    for (const c of COLS[coll] || []) r[c] = c === 'demo' ? !!data[c] : (data[c] == null ? '' : String(data[c]));
+    return r;
+  }
+  async function fetchAll(q) {
+    const out = new Map();
+    for (let from = 0; ; from += 1000) {
+      let r = sb.from(q.coll).select('id,data').order('id').range(from, from + 999);
+      if (q.where) r = r.eq(q.where[0], q.where[2]);
+      const res = await r;
+      if (res.error) return null;
+      res.data.forEach(x => out.set(x.id, x.data));
+      if (res.data.length < 1000) break;
+    }
+    return out;
+  }
+  function touch(coll) { clearTimeout(touchT[coll]); touchT[coll] = setTimeout(() => live.forEach(s => { if (s.coll === coll) s.load(); }), 250); }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) live.forEach(s => s.load()); });
 
-  /* q = {coll, where:[champ,'==',valeur]} ; cb(Map id→données, {ok, enCache} | {erreur}) */
+  /* q = {coll, where:[champ,'==',valeur]} ; cb(Map id→données, {ok}) ou cb(null, {erreur}) */
   store.watch = function (q, cb) {
-    let off = null, dead = false;
-    store.ready.then(() => {
-      if (dead) return;
-      if (!store.db) { const s = { q, cb }; memSubs.add(s); off = () => memSubs.delete(s); memDeliver(s); return; }
-      let ref = store.db.collection(q.coll);
-      if (q.where) ref = ref.where(q.where[0], q.where[1], q.where[2]);
-      off = ref.onSnapshot(snap => {
-        const out = new Map();
-        snap.docs.forEach(d => { const v = d.data(); if (v) out.set(d.id, v); });
-        cb(out, { ok: true, enCache: snap.metadata && snap.metadata.fromCache });
-      }, err => cb(null, { erreur: err }));
-    });
-    return () => { dead = true; if (off) off(); };
+    if (!sb) { const s = { q, cb }; memSubs.add(s); setTimeout(() => { if (memSubs.has(s)) memDeliver(s); }, 0); return () => memSubs.delete(s); }
+    let dead = false, t = null, busy = false, again = false;
+    const s = { coll: q.coll, load: async () => {
+      if (dead) return; if (busy) { again = true; return; }
+      busy = true; const m = await fetchAll(q).catch(() => null); busy = false;
+      if (dead) return; if (m) cb(m, { ok: true }); else cb(null, { erreur: true });
+      if (again) { again = false; s.load(); }
+    } };
+    live.add(s); s.load();
+    const ch = sb.channel('sp-' + q.coll + '-' + (chanN++)).on('postgres_changes', { event: '*', schema: 'public', table: q.coll }, () => { clearTimeout(t); t = setTimeout(s.load, 300); }).subscribe();
+    const poll = setInterval(s.load, 90000);
+    return () => { dead = true; live.delete(s); clearInterval(poll); clearTimeout(t); try { sb.removeChannel(ch); } catch (e) { /* déjà fermé */ } };
   };
 
-  function enqueue(path, job) {
-    const prev = queues.get(path) || Promise.resolve();
-    const next = prev.catch(() => { }).then(job);
-    queues.set(path, next);
-    next.finally(() => { if (queues.get(path) === next) queues.delete(path); }).catch(() => { });
-    return next;
-  }
   async function attempt(fn) {
     for (let i = 0; ; i++) {
-      try { return await fn(); }
-      catch (e) {
-        const code = e && e.code;
-        if ((code === 'unavailable' || code === 'resource_exhausted') && i < 3) { await new Promise(r => setTimeout(r, 700 * (i + 1) + Math.random() * 500)); continue; }
-        throw e;
-      }
+      let res; try { res = await fn(); } catch (e) { res = { error: { message: 'Failed to fetch' } }; }
+      if (res.error && /fetch|network|timeout/i.test(res.error.message || '') && i < 2) { await new Promise(r => setTimeout(r, 800 * (i + 1))); continue; }
+      return res;
     }
   }
   function explain(e) {
-    const code = e && e.code;
-    if (code === 'invalid_argument') {
-      if (!readOnlyWarned) { readOnlyWarned = true; SP.toast('Modification refusée : votre accès à SP WORK est en lecture seule. Demandez un accès Contributeur.', true); }
-    } else if (code === 'quota_exceeded') SP.toast('Espace de stockage plein : supprimez d\'anciens bons de livraison.', true);
+    if (e && (e.code === '42501' || /row-level security/i.test(e.message || ''))) SP.toast('Action réservée au bureau : votre compte n\'a pas ce droit.', true);
+    else if (e && /fetch|network/i.test(e.message || '')) SP.toast('Pas de connexion : la modification n\'a pas été enregistrée. Réessayez.', true);
     else SP.toast('Enregistrement impossible pour l\'instant. Réessayez dans un moment.', true);
   }
-  function clean(data) { return JSON.parse(JSON.stringify(data)); }
 
-  store.newId = function (coll) {
-    if (store.db) { try { return store.db.collection(coll).doc().id; } catch (e) { /* repli */ } }
-    return SP.uid();
-  };
+  store.newId = function () { return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : SP.uid(); };
   store.set = async function (coll, id, data, silencieux) {
-    await store.ready;
     const body = clean(data);
-    if (!store.db) { memColl(coll).set(id, body); memEmit(coll); return true; }
-    try { await enqueue(coll + '/' + id, () => attempt(() => store.db.collection(coll).doc(id).set(body))); return true; }
-    catch (e) { if (!silencieux) explain(e); return false; }
+    if (!sb) { memColl(coll).set(id, body); memEmit(coll); return true; }
+    const res = await attempt(() => sb.from(coll).upsert(toRow(coll, id, body)));
+    if (res.error) { if (!silencieux) explain(res.error); return false; }
+    touch(coll); return true;
+  };
+  /* mise à jour d'un document existant (seule écriture permise aux chauffeurs sur les BL) */
+  store.update = async function (coll, id, data) {
+    const body = clean(data);
+    if (!sb) { memColl(coll).set(id, body); memEmit(coll); return true; }
+    const row = toRow(coll, id, body); delete row.id;
+    const res = await attempt(() => sb.from(coll).update(row).eq('id', id).select('id'));
+    if (res.error || !res.data || !res.data.length) { explain(res.error || { code: '42501' }); return false; }
+    touch(coll); return true;
+  };
+  /* création seule (preuves de livraison déposées par les chauffeurs) */
+  store.insert = async function (coll, id, data) {
+    const body = clean(data);
+    if (!sb) { memColl(coll).set(id, body); memEmit(coll); return true; }
+    const res = await attempt(() => sb.from(coll).insert(toRow(coll, id, body)));
+    if (res.error) { explain(res.error); return false; }
+    touch(coll); return true;
   };
   store.remove = async function (coll, id) {
-    await store.ready;
-    if (!store.db) { memColl(coll).delete(id); memEmit(coll); return true; }
-    try { await enqueue(coll + '/' + id, () => attempt(() => store.db.collection(coll).doc(id).delete())); return true; }
-    catch (e) { explain(e); return false; }
+    if (!sb) { memColl(coll).delete(id); memEmit(coll); return true; }
+    const res = await attempt(() => sb.from(coll).delete().eq('id', id));
+    if (res.error) { explain(res.error); return false; }
+    touch(coll); return true;
   };
   store.get = async function (coll, id) {
-    await store.ready;
-    if (!store.db) return memColl(coll).get(id) || null;
-    try { const s = await store.db.collection(coll).doc(id).get(); return s.exists ? s.data() : null; } catch (e) { return null; }
+    if (!sb) return memColl(coll).get(id) || null;
+    const res = await attempt(() => sb.from(coll).select('data').eq('id', id).maybeSingle());
+    return res.error || !res.data ? null : res.data.data;
   };
   store.query = async function (coll, where) {
-    await store.ready;
-    const out = new Map();
-    if (!store.db) { memColl(coll).forEach((d, id) => { if (match(d, where)) out.set(id, d); }); return out; }
-    try {
-      let ref = store.db.collection(coll);
-      if (where) ref = ref.where(where[0], where[1], where[2]);
-      const snap = await ref.get();
-      snap.docs.forEach(d => { const v = d.data(); if (v) out.set(d.id, v); });
-    } catch (e) { /* liste vide */ }
-    return out;
+    if (!sb) { const out = new Map(); memColl(coll).forEach((d, id) => { if (match(d, where)) out.set(id, d); }); return out; }
+    return (await fetchAll({ coll, where }).catch(() => null)) || new Map();
   };
-  /* écritures en série avec progression : jobs = [() => Promise] */
+  /* écritures en série avec progression : jobs = [() => Promise<bool>] */
   store.batch = async function (jobs, onProgress) {
     let done = 0, ok = 0, i = 0;
     async function worker() {
@@ -241,12 +242,100 @@
     return ok;
   };
 
+  /* ---------- comptes et rôles ---------- */
+  const auth = SP.auth = { session: null, profil: null, profils: new Map(), ecoute: new Set() };
+  const ESSAI_PROFILS = [
+    { id: 'essai-bureau', nom: 'Bureau (essai)', role: 'bureau', site: 'genas', actif: true },
+    { id: 'essai-ch1', nom: 'Chauffeur A (essai)', role: 'chauffeur', site: 'genas', actif: true },
+    { id: 'essai-ch2', nom: 'Chauffeur B (essai)', role: 'chauffeur', site: 'saint-priest', actif: true }
+  ];
+  auth.nom = id => { const p = auth.profils.get(id); return p ? (p.nom || p.email || 'Sans nom') : ''; };
+  auth.actifs = () => [...auth.profils.values()].filter(p => p.actif).sort((a, b) => (a.role === b.role ? 0 : a.role === 'chauffeur' ? -1 : 1) || String(a.nom).localeCompare(String(b.nom), 'fr'));
+  auth.estBureau = () => !!auth.profil && auth.profil.role === 'bureau';
+  let offProfils = null;
+  async function loadProfils() {
+    const res = await sb.from('profils').select('*').order('nom');
+    if (res.error) return;
+    auth.profils = new Map(res.data.map(p => [p.id, p]));
+    const moi = auth.session && auth.profils.get(auth.session.user.id);
+    if (moi) { const change = !auth.profil || auth.profil.role !== moi.role || auth.profil.actif !== moi.actif; auth.profil = moi; if (change) { gate(); return; } renderStatus(); }
+    auth.ecoute.forEach(f => f());
+  }
+  auth.majProfil = async function (id, patch) {
+    if (!sb) { Object.assign(auth.profils.get(id), patch); auth.ecoute.forEach(f => f()); return true; }
+    const res = await sb.from('profils').update(patch).eq('id', id).select('id');
+    if (res.error || !res.data.length) { explain(res.error || { code: '42501' }); return false; }
+    await loadProfils(); return true;
+  };
+  async function onSession(sess) {
+    const avant = auth.session && auth.session.user.id, apres = sess && sess.user.id;
+    auth.session = sess;
+    if (avant === apres && auth.profil) return;
+    if (offProfils) { offProfils(); offProfils = null; }
+    auth.profil = null; auth.profils = new Map();
+    if (sess) {
+      for (let i = 0; i < 4 && !auth.profil; i++) {
+        const res = await sb.from('profils').select('*').eq('id', sess.user.id).maybeSingle();
+        if (res.data) auth.profil = res.data; else await new Promise(r => setTimeout(r, 600));
+      }
+      if (auth.profil && auth.profil.actif) {
+        await loadProfils();
+        let t = null;
+        const ch = sb.channel('sp-profils').on('postgres_changes', { event: '*', schema: 'public', table: 'profils' }, () => { clearTimeout(t); t = setTimeout(loadProfils, 300); }).subscribe();
+        offProfils = () => { try { sb.removeChannel(ch); } catch (e) { /* fermé */ } };
+      }
+    }
+    gate();
+  }
+  auth.deconnexion = async function () { if (sb) await sb.auth.signOut(); };
+
   function renderStatus() {
     const el = document.getElementById('sp-status');
     if (!el) return;
     el.replaceChildren();
-    if (store.mode === 'partage') { el.className = ''; el.append(h('span', { class: 'dot' }), h('span', { class: 'lbl', text: 'Données partagées' })); }
-    else if (store.mode === 'local') { el.className = 'local'; el.append(h('span', { class: 'dot' }), h('span', { class: 'lbl', text: 'Essai sans enregistrement' })); }
+    if (!sb) { el.className = 'local'; el.append(h('span', { class: 'dot' }), h('span', { class: 'lbl', text: 'Essai sans enregistrement' })); return; }
+    el.className = '';
+    if (auth.profil) el.append(h('span', { class: 'lbl', text: auth.profil.nom || auth.profil.email || '' }),
+      h('button', { class: 'btn sm', type: 'button', style: 'min-height:30px;background:transparent;color:inherit;border-color:rgba(255,255,255,.45)', onclick: () => auth.deconnexion() }, 'Quitter'));
+  }
+
+  function ecranConnexion(main) {
+    let creer = false;
+    const box = h('div', { class: 'card stack', style: 'max-width:420px;margin:32px auto;padding:20px' });
+    function draw(msg) {
+      const email = h('input', { class: 'input', id: 'cx-email', type: 'email', autocomplete: 'username', inputmode: 'email' });
+      const mdp = h('input', { class: 'input', id: 'cx-mdp', type: 'password', autocomplete: creer ? 'new-password' : 'current-password' });
+      const nom = h('input', { class: 'input', id: 'cx-nom', autocomplete: 'name' });
+      const btn = h('button', { class: 'btn primary', type: 'submit' }, creer ? 'Créer mon compte' : 'Se connecter');
+      const form = h('form', { class: 'stack', onsubmit: async e => {
+        e.preventDefault();
+        if (!email.value.trim() || mdp.value.length < 8) { draw('Indiquez votre e-mail et un mot de passe d\'au moins 8 caractères.'); return; }
+        if (creer && !nom.value.trim()) { draw('Indiquez votre prénom et votre nom.'); return; }
+        btn.disabled = true;
+        const res = creer
+          ? await sb.auth.signUp({ email: email.value.trim(), password: mdp.value, options: { data: { nom: nom.value.trim() } } })
+          : await sb.auth.signInWithPassword({ email: email.value.trim(), password: mdp.value });
+        if (res.error) draw(/invalid login/i.test(res.error.message) ? 'E-mail ou mot de passe incorrect.' : /already registered/i.test(res.error.message) ? 'Un compte existe déjà avec cet e-mail : connectez-vous.' : /confirm/i.test(res.error.message) ? 'Votre e-mail n\'est pas encore confirmé : ouvrez le message reçu.' : 'Connexion impossible : ' + res.error.message);
+        else if (creer && !res.data.session) { creer = false; draw('Compte créé. Si un e-mail de confirmation vous a été envoyé, ouvrez-le, puis connectez-vous ici.'); }
+      } },
+        creer ? h('label', { class: 'field' }, h('span', { text: 'Prénom et nom' }), nom) : null,
+        h('label', { class: 'field' }, h('span', { text: 'E-mail' }), email),
+        h('label', { class: 'field' }, h('span', { text: 'Mot de passe' }), mdp),
+        btn);
+      box.replaceChildren(...[h('h1', { text: creer ? 'Créer mon compte' : 'Connexion à SP WORK', style: 'font-size:1.6rem' }),
+        msg ? h('div', { class: 'notice', text: msg }) : null, form,
+        h('button', { class: 'btn ghost', type: 'button', onclick: () => { creer = !creer; draw(); } }, creer ? 'J\'ai déjà un compte' : 'Première visite : créer mon compte'),
+        creer ? h('div', { class: 'small muted', text: 'Après la création, un responsable doit activer votre compte avant le premier accès.' }) : null].filter(Boolean));
+    }
+    draw(); main.appendChild(box);
+  }
+  function ecranAttente(main) {
+    main.appendChild(h('div', { class: 'card stack', style: 'max-width:460px;margin:32px auto;padding:20px' },
+      h('h1', { text: 'Compte en attente d\'activation', style: 'font-size:1.5rem' }),
+      h('p', { style: 'margin:0', text: 'Votre compte est créé. Un responsable doit l\'activer dans SP WORK (Livraison > Réglages > Utilisateurs). Revenez ensuite sur cette page.' }),
+      h('div', { class: 'row' },
+        h('button', { class: 'btn primary', type: 'button', onclick: async () => { const s = auth.session; auth.profil = null; auth.session = null; await onSession(s); } }, 'Vérifier à nouveau'),
+        h('button', { class: 'btn', type: 'button', onclick: () => auth.deconnexion() }, 'Changer de compte'))));
   }
 
   /* ---------- import de fichiers Excel / CSV ---------- */
@@ -372,18 +461,36 @@
   SP.registerApp = function (app) { SP.apps.push(app); };
   let unmount = null;
   SP.go = function (id) { if (location.hash !== '#' + id) location.hash = id; else route(); };
-  function route() {
-    const id = (location.hash || '').replace(/^#/, '');
-    const app = SP.apps.find(a => a.id === id && a.mount) || SP.apps.find(a => a.id === 'accueil');
+  function clear() {
     if (unmount) { try { unmount(); } catch (e) { /* rien */ } unmount = null; }
-    const main = document.getElementById('sp-main');
-    main.replaceChildren();
+    document.getElementById('sp-layers').replaceChildren();
+    const main = document.getElementById('sp-main'); main.replaceChildren(); return main;
+  }
+  function route() {
+    if (sb && !(auth.profil && auth.profil.actif)) return;
+    let id = (location.hash || '').replace(/^#/, '');
+    if (!auth.estBureau()) id = 'ma-tournee';
+    const app = SP.apps.find(a => a.id === id && a.mount) || SP.apps.find(a => a.id === 'accueil');
+    const main = clear();
     document.getElementById('sp-title').textContent = app.id === 'accueil' ? '' : app.nom;
     unmount = app.mount(main) || null;
   }
-  SP.start = function () {
-    document.getElementById('sp-home').addEventListener('click', () => SP.go('accueil'));
-    window.addEventListener('hashchange', route);
+  /* choisit l'écran selon la session : connexion, attente d'activation, ou l'application */
+  function gate() {
+    renderStatus();
+    if (!sb) { route(); return; }
+    if (!auth.session) { document.getElementById('sp-title').textContent = ''; ecranConnexion(clear()); return; }
+    if (!auth.profil || !auth.profil.actif) { document.getElementById('sp-title').textContent = ''; ecranAttente(clear()); return; }
     route();
+  }
+  SP.start = async function () {
+    document.getElementById('sp-home').addEventListener('click', () => SP.go(auth.estBureau() ? 'accueil' : 'ma-tournee'));
+    window.addEventListener('hashchange', route);
+    if (!sb) { auth.profils = new Map(ESSAI_PROFILS.map(p => [p.id, p])); auth.profil = ESSAI_PROFILS[0]; gate(); return; }
+    document.getElementById('sp-main').appendChild(h('div', { class: 'empty', text: 'Connexion…' }));
+    let sess = null;
+    try { sess = (await sb.auth.getSession()).data.session; } catch (e) { sess = null; }
+    await onSession(sess); if (!sess) gate();
+    sb.auth.onAuthStateChange((ev, s) => { if (ev === 'SIGNED_IN' || ev === 'SIGNED_OUT' || ev === 'USER_UPDATED') setTimeout(() => onSession(s), 0); else if (s) auth.session = s; });
   };
 })();

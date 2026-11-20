@@ -188,3 +188,4 @@ textarea.input{min-height:76px;resize:vertical}
   #sp-status .lbl{display:none}
   .pane-head h2{flex-basis:100%}
 }
+@media (max-width:620px){#ch-qui{flex:1 1 100%;max-width:none !important}}

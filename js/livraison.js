@@ -17,7 +17,7 @@
   function mount(main) {
     S = {
       tab: prefs.get('lv.tab', 'tournee'), site: prefs.get('lv.site', 'genas'), date: SP.today(), vueBL: 'jour',
-      clients: new Map(), blsJour: new Map(), attente: new Map(), tournees: new Map(), reglages: {},
+      chauffeur: '', clients: new Map(), blsJour: new Map(), attente: new Map(), echecs: new Map(), tournees: new Map(), reglages: {},
       charge: { clients: false, bls: false }, lent: false, sel: null, filtre: '', map: null, subs: [], subsDate: []
     };
     if (!SITES[S.site]) S.site = 'genas';
@@ -49,6 +49,8 @@
     S.subs.push(store.watch({ coll: 'clients' }, (m, i) => { if (m) { st.clients = m; st.charge.clients = true; } else st.charge.clients = true; refresh(); }));
     S.subs.push(store.watch({ coll: 'reglages' }, m => { if (m) { st.reglages = m.get('livraison') || {}; refresh(); } }));
     S.subs.push(store.watch({ coll: 'bls', where: ['statut', '==', 'a-livrer'] }, m => { if (m) { st.attente = m; refresh(); } }));
+    S.subs.push(store.watch({ coll: 'bls', where: ['statut', '==', 'echec'] }, m => { if (m) { st.echecs = m; refresh(); } }));
+    const surProfils = () => { if (S === st) refresh(); }; SP.auth.ecoute.add(surProfils); S.subs.push(() => SP.auth.ecoute.delete(surProfils));
     subDate();
     const slow = setTimeout(() => { if (S === st && !(st.charge.clients && st.charge.bls)) { st.lent = true; refresh(); } }, 10000);
     geo.load().then(() => { if (S === st) refresh(); }, () => SP.toast('Fond de carte indisponible : la localisation automatique est désactivée.', true));
@@ -81,19 +83,20 @@
     if (p) return Object.assign({ client }, p, { key: 'p:' + bl.clientId + ':' + p.id });
     return { key: 'c:' + (bl.clientId || SP.norm(client).replace(/ /g, '-')), client, adresse: '', cp: '', ville: '' };
   }
-  function tourId() { return S.date + '_' + S.site; }
+  function tourId(ch) { ch = ch === undefined ? S.chauffeur : ch; return S.date + '_' + S.site + (ch ? '_' + ch : ''); }
+  const traite = b => b.statut === 'livre' || b.statut === 'echec';
   function computeTour() {
     const dep = depot(S.site), t = S.tournees.get(tourId()) || {};
     const boucle = t.boucle !== false;
     const map = new Map();
     S.blsJour.forEach((bl, id) => {
-      if ((bl.site || 'genas') !== S.site) return;
+      if ((bl.site || 'genas') !== S.site || (bl.chauffeur || '') !== S.chauffeur) return;
       const l = lieuBL(bl);
       if (!map.has(l.key)) map.set(l.key, { key: l.key, lieu: l, bls: [] });
       map.get(l.key).bls.push(Object.assign({ id }, bl));
     });
     const all = [...map.values()];
-    all.forEach(s => { s.fait = s.bls.every(b => b.statut === 'livre'); s.bls.sort((a, b) => String(a.numero).localeCompare(String(b.numero))); });
+    all.forEach(s => { s.fait = s.bls.every(traite); s.echec = s.bls.some(b => b.statut === 'echec'); s.reserves = s.bls.some(b => b.statut === 'livre' && b.livraison && b.livraison.reserves); s.bls.sort((a, b) => String(a.numero).localeCompare(String(b.numero))); });
     const loc = all.filter(s => hasPos(s.lieu)), sans = all.filter(s => !hasPos(s.lieu));
     const ordre = (t.ordre || []).filter(k => map.has(k) && hasPos(map.get(k).lieu));
     const connus = new Set(ordre);
@@ -110,7 +113,7 @@
     return { dep, boucle, stops, sans, km, retour, nbBL, poids, minutes, aOptimiser: stops.length > 1 && (nouveaux.length > 0 || !t.ordre), nouveaux: nouveaux.length, dejaOptimise: !!t.ordre };
   }
   function saveTour(patch) {
-    const t = Object.assign({ date: S.date, site: S.site, boucle: true }, S.tournees.get(tourId()) || {}, patch, { maj: new Date().toISOString() });
+    const t = Object.assign({ date: S.date, site: S.site, chauffeur: S.chauffeur, boucle: true }, S.tournees.get(tourId()) || {}, patch, { maj: new Date().toISOString() });
     return store.set('tournees', tourId(), t);
   }
   function optimiser() {
@@ -129,7 +132,7 @@
     keys[i] = keys[j]; keys[j] = key; saveTour({ ordre: keys });
   }
   function marquer(stop, livre) {
-    stop.bls.forEach(b => { const d = Object.assign({}, b); delete d.id; d.statut = livre ? 'livre' : 'a-livrer'; d.maj = new Date().toISOString(); store.set('bls', b.id, d); });
+    stop.bls.forEach(b => { const d = Object.assign({}, b); delete d.id; d.statut = livre ? 'livre' : 'a-livrer'; if (livre) d.livraison = { at: new Date().toISOString(), par: SP.auth.profil.id, parNom: SP.auth.profil.nom, saisie: 'bureau' }; else delete d.livraison; d.maj = new Date().toISOString(); store.update('bls', b.id, d); });
   }
   function liensMaps(T) {
     const pt = p => (p.geo === 'manuel' && hasPos(p)) || !p.ville ? (hasPos(p) ? p.lat + ',' + p.lon : '') : adr(p);
@@ -161,7 +164,7 @@
   }
   function refresh() {
     if (!S || !S.pane) return;
-    if (S.tab === 'tournee') drawTournee(); else if (S.tab === 'bl') drawBL(); else drawClients();
+    if (S.tab === 'chauffeur') drawChauffeur(); else if (S.tab === 'tournee') drawTournee(); else if (S.tab === 'bl') drawBL(); else drawClients();
   }
   function etatChargement() {
     if (S.charge.clients && S.charge.bls) return null;
@@ -178,6 +181,8 @@
     P.mapBox = h('div', { class: 'tour-map' });
     S.el.body.appendChild(h('div', { class: 'pane' },
       h('div', { class: 'pane-head' }, P.titre,
+        P.selCh = h('select', { class: 'input', id: 'lv-chauffeur', style: 'width:auto;max-width:260px', 'aria-label': 'Chauffeur de la tournée', onchange: () => { S.chauffeur = P.selCh.value; S.sel = null; if (S.map) S.map.fit(); refresh(); } }),
+        P.btnAff = h('button', { class: 'btn', type: 'button', onclick: () => { const T = computeTour(); affecter(T.stops.concat(T.sans), true); } }, SP.icon('users'), 'Affecter'),
         h('button', { class: 'btn', type: 'button', onclick: () => editBL(null) }, SP.icon('plus'), 'Ajouter un BL'),
         P.btnOpt = h('button', { class: 'btn primary', type: 'button', onclick: optimiser }, SP.icon('route'), 'Optimiser le circuit')),
       P.stats, P.infos,
@@ -191,6 +196,11 @@
     const P = S.pane, T = computeTour();
     P.titre.textContent = 'Tournée du ' + SP.frDate(S.date);
     P.btnOpt.disabled = T.stops.length < 2;
+    P.btnAff.disabled = !(T.stops.length + T.sans.length);
+    const compte = new Map(); S.blsJour.forEach(b => { if ((b.site || 'genas') === S.site) compte.set(b.chauffeur || '', (compte.get(b.chauffeur || '') || 0) + 1); });
+    const ids = SP.auth.actifs().map(p => p.id); compte.forEach((n, id) => { if (id && ids.indexOf(id) < 0) ids.push(id); });
+    P.selCh.replaceChildren(h('option', { value: '', text: 'Sans chauffeur (' + (compte.get('') || 0) + ' BL)', selected: !S.chauffeur }),
+      ...ids.map(id => h('option', { value: id, text: (SP.auth.nom(id) || 'Compte supprimé') + ' (' + (compte.get(id) || 0) + ' BL)', selected: S.chauffeur === id })));
     P.stats.replaceChildren(
       h('div', null, h('b', { text: String(T.stops.length) }), h('span', { text: 'Arrêts' })),
       h('div', null, h('b', { text: String(T.nbBL) }), h('span', { text: 'BL' })),
@@ -222,11 +232,12 @@
             h('div', { class: 'meta' },
               s.bls.map(b => h('button', { class: 'btn sm', type: 'button', onclick: e => { e.stopPropagation(); editBL(b.id); } }, 'BL ' + b.numero)),
               (colis || poids) ? h('span', { class: 'pill neutral num', text: [colis ? colis + ' colis' : '', poids ? SP.fmt(poids) + ' kg' : ''].filter(Boolean).join(' · ') }) : null,
-              s.fait ? h('span', { class: 'pill ok', text: 'Livré' }) : null),
+              pillStop(s)),
             s.bls.filter(b => b.note).map(b => h('div', { class: 'adr', text: 'Note BL ' + b.numero + ' : ' + b.note }))),
           h('div', { class: 'acts' },
             h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Monter dans le circuit', disabled: i === 0, onclick: e => { e.stopPropagation(); deplacer(s.key, -1); } }, SP.icon('up')),
             h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Descendre dans le circuit', disabled: i === T.stops.length - 1, onclick: e => { e.stopPropagation(); deplacer(s.key, 1); } }, SP.icon('down')),
+            h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Affecter cet arrêt à un chauffeur', onclick: e => { e.stopPropagation(); affecter([s], false); } }, SP.icon('users')),
             h('button', { class: 'iconbtn', type: 'button', 'aria-label': s.fait ? 'Remettre à livrer' : 'Marquer comme livré', style: s.fait ? 'background:var(--ok);color:#fff;border-color:var(--ok)' : '', onclick: e => { e.stopPropagation(); marquer(s, !s.fait); } }, SP.icon('check')))));
       });
       const cb = h('input', { type: 'checkbox', id: 'lv-boucle', checked: T.boucle, onchange: () => saveTour({ boucle: cb.checked }) });
@@ -238,7 +249,7 @@
         liens.map((u, i) => h('a', { class: 'btn brand', href: u, target: '_blank', rel: 'noopener' }, SP.icon('ext'), liens.length > 1 ? 'Itinéraire routier Google Maps, tronçon ' + (i + 1) + '/' + liens.length : 'Itinéraire routier dans Google Maps')),
         h('div', { class: 'small muted', text: 'Les kilomètres et la durée affichés ici sont des estimations (distance à vol d\'oiseau × ' + SP.fmt(reglage('coef'), 1) + ', ' + reglage('vitesse') + ' km/h, ' + reglage('arret') + ' min par arrêt). Google Maps donne le trajet routier réel dans l\'ordre calculé.' })));
     } else if (!etatChargement() && (S.clients.size || S.blsJour.size)) {
-      items.push(h('div', { class: 'card empty' }, 'Aucune livraison au départ de ' + SITES[S.site].nom + ' ce jour-là. Ajoutez un BL ou changez de date.'));
+      items.push(h('div', { class: 'card empty' }, 'Aucune livraison ' + (S.chauffeur ? 'affectée à ' + SP.auth.nom(S.chauffeur) : 'sans chauffeur') + ' au départ de ' + SITES[S.site].nom + ' ce jour-là. Changez de chauffeur dans la liste, ajoutez un BL ou changez de date.'));
     }
     P.liste.replaceChildren(...items);
 
@@ -246,7 +257,7 @@
     if (hasPos(T.dep) && T.stops.length) { ligne.push(T.dep); T.stops.forEach(s => ligne.push(s.lieu)); if (T.boucle) ligne.push(T.dep); }
     S.map.set({
       depot: hasPos(T.dep) ? T.dep : null, ligne, sel: S.sel,
-      arrets: T.stops.map((s, i) => ({ id: s.key, lat: s.lieu.lat, lon: s.lieu.lon, label: String(i + 1), fait: s.fait }))
+      arrets: T.stops.map((s, i) => ({ id: s.key, lat: s.lieu.lat, lon: s.lieu.lon, label: String(i + 1), fait: s.fait && !s.echec, hors: s.echec }))
     });
   }
   function demarrage() {
@@ -266,7 +277,7 @@
   /* --- Bons de livraison --- */
   function buildBL() {
     const P = S.pane;
-    P.seg = h('div', { class: 'seg' }, [['jour', 'Jour affiché'], ['attente', 'Tous à livrer']].map(v =>
+    P.seg = h('div', { class: 'seg' }, [['jour', 'Jour affiché'], ['attente', 'Tous à livrer'], ['echecs', 'Non livrés']].map(v =>
       h('button', { type: 'button', 'data-v': v[0], onclick: () => { S.vueBL = v[0]; drawBL(); } }, v[1])));
     P.liste = h('div', { class: 'stack' });
     S.el.body.appendChild(h('div', { class: 'pane' },
@@ -281,7 +292,8 @@
       h('div', { class: 'grow' }, h('div', { class: 't', text: 'BL ' + bl.numero + ' · ' + l.client }),
         h('div', { class: 's', text: [adr(l) || 'Lieu à préciser', bl.colis ? bl.colis + ' colis' : '', bl.poids ? SP.fmt(bl.poids) + ' kg' : ''].filter(Boolean).join(' · ') })),
       !hasPos(l) ? h('span', { class: 'pill warn', text: 'À localiser' }) : null,
-      h('span', { class: 'pill ' + (bl.statut === 'livre' ? 'ok' : 'neutral'), text: bl.statut === 'livre' ? 'Livré' : 'À livrer' }));
+      bl.chauffeur ? h('span', { class: 'pill neutral', text: SP.auth.nom(bl.chauffeur) || 'Chauffeur' }) : null,
+      h('span', { class: 'pill ' + statutBL(bl)[0], text: statutBL(bl)[1] }));
   }
   function drawBL() {
     const P = S.pane;
@@ -294,11 +306,11 @@
       out.push(rows.length ? h('div', { class: 'list' }, rows.map(e => ligneBL(e[0], e[1]))) : h('div', { class: 'card empty', text: 'Aucun BL pour ce jour et ce site.' }));
     } else {
       const parJour = new Map();
-      [...S.attente].forEach(e => { const d = e[1].date || ''; if (!parJour.has(d)) parJour.set(d, []); parJour.get(d).push(e); });
+      [...(S.vueBL === 'echecs' ? S.echecs : S.attente)].forEach(e => { const d = e[1].date || ''; if (!parJour.has(d)) parJour.set(d, []); parJour.get(d).push(e); });
       const jours = [...parJour.keys()].sort();
-      if (!jours.length) out.push(h('div', { class: 'card empty', text: 'Tout est livré : aucun BL en attente.' }));
+      if (!jours.length) out.push(h('div', { class: 'card empty', text: S.vueBL === 'echecs' ? 'Aucun problème de livraison signalé.' : 'Tout est livré : aucun BL en attente.' }));
       jours.forEach(d => {
-        out.push(h('div', { class: 'row' }, h('div', { class: 'daysep', text: SP.frDate(d) }), d < SP.today() ? h('span', { class: 'pill crit', text: 'En retard' }) : null,
+        out.push(h('div', { class: 'row' }, h('div', { class: 'daysep', text: SP.frDate(d) }), d < SP.today() && S.vueBL !== 'echecs' ? h('span', { class: 'pill crit', text: 'En retard' }) : null,
           h('button', { class: 'btn sm ghost', type: 'button', onclick: () => { S.tab = 'tournee'; setDate(d); showTab(); } }, 'Voir la tournée')));
         out.push(h('div', { class: 'list' }, parJour.get(d).sort(tri).map(e => ligneBL(e[0], e[1]))));
       });
@@ -341,6 +353,214 @@
     if (all.some(e => e[1].demo)) out.push(h('button', { class: 'btn danger', type: 'button', onclick: supprimerEssai }, SP.icon('trash'), 'Supprimer le jeu d\'essai fictif'));
     P.liste.replaceChildren(...out);
   }
+
+  /* ---------- statuts, chauffeurs, preuves ---------- */
+  function statutBL(bl) {
+    const l = bl.livraison || {};
+    if (bl.statut === 'livre') return l.reserves ? ['warn', 'Livré avec réserves'] : ['ok', 'Livré'];
+    if (bl.statut === 'echec') return ['crit', 'Non livré' + (l.motif ? ' : ' + l.motif : '')];
+    return ['neutral', 'À livrer'];
+  }
+  function pillStop(s) {
+    if (s.echec) return h('span', { class: 'pill crit', text: statutBL(s.bls.find(b => b.statut === 'echec'))[1] });
+    if (s.fait) return h('span', { class: 'pill ' + (s.reserves ? 'warn' : 'ok'), text: s.reserves ? 'Livré avec réserves' : 'Livré' });
+    return null;
+  }
+  const frHeure = iso => { try { return new Date(iso).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); } catch (e) { return ''; } };
+  function affecter(stops, tout) {
+    const m = SP.modal({ titre: 'Affecter à un chauffeur' });
+    const nb = stops.reduce((n, s) => n + s.bls.length, 0);
+    const go = async cible => {
+      m.close();
+      const source = S.tournees.get(tourId());
+      const jobs = [];
+      stops.forEach(s => s.bls.forEach(b => { const d = Object.assign({}, b); delete d.id; d.chauffeur = cible; d.maj = new Date().toISOString(); jobs.push(() => store.set('bls', b.id, d, true)); }));
+      if (tout && source && source.ordre && !S.tournees.get(tourId(cible))) jobs.push(() => store.set('tournees', tourId(cible), Object.assign({}, source, { chauffeur: cible, maj: new Date().toISOString() }), true));
+      const ok = await store.batch(jobs);
+      if (ok < jobs.length) SP.toast('Affectation incomplète : réessayez.', true);
+      else { SP.toast(nb + ' BL affecté(s) à ' + (cible ? SP.auth.nom(cible) : 'personne') + '.'); if (tout) { S.chauffeur = cible; S.sel = null; if (S.map) S.map.fit(); refresh(); } }
+    };
+    const liste = SP.auth.actifs().filter(p => p.id !== S.chauffeur);
+    m.body.append(h('div', { class: 'small muted', text: nb + ' BL concerné(s). Le chauffeur les verra dans « Ma tournée » sur son téléphone.' }),
+      h('div', { class: 'sugg', style: 'max-height:none' },
+        liste.map(p => h('button', { type: 'button', onclick: () => go(p.id) }, h('b', { text: p.nom || p.email }), ' · ' + (p.role === 'chauffeur' ? 'chauffeur' : 'bureau') + ', ' + (SITES[p.site] || SITES.genas).nom)),
+        S.chauffeur ? h('button', { type: 'button', onclick: () => go('') }, 'Retirer l\'affectation') : null),
+      liste.length ? null : h('div', { class: 'notice', text: 'Aucun autre compte actif. Les chauffeurs créent leur compte depuis l\'écran de connexion, puis vous les activez dans Réglages > Utilisateurs.' }));
+  }
+  async function voirPreuve(id) {
+    const p = await store.get('preuves', id);
+    if (!p) { SP.toast('Preuve de livraison introuvable.', true); return; }
+    const m = SP.modal({ titre: 'Preuve de livraison' });
+    m.body.append(
+      h('div', null, h('b', { text: p.client || '' }), h('div', { class: 'small muted', text: p.lieu || '' })),
+      h('div', { text: 'Réceptionné par ' + (p.signataire || '?') + ', le ' + frHeure(p.at) + '. Livré par ' + (p.parNom || '?') + '.' }),
+      p.reserves ? h('div', { class: 'notice', text: 'Réserves : ' + p.reserves }) : null,
+      /^data:image\/png;base64,/.test(p.signature || '') ? h('img', { src: p.signature, alt: 'Signature de ' + (p.signataire || ''), style: 'max-width:100%;border:1px solid var(--line);border-radius:8px;background:#fff' }) : h('div', { class: 'muted', text: 'Pas de signature enregistrée.' }));
+    m.setActions(h('button', { class: 'btn primary', type: 'button', onclick: () => m.close() }, 'Fermer'));
+  }
+  function blocLivraison(b) {
+    const l = b.livraison; if (!l || b.statut === 'a-livrer') return null;
+    return h('div', { class: 'pointbox' },
+      h('div', { class: 'row' }, h('b', { class: 'grow', text: b.statut === 'echec' ? 'Livraison non effectuée' : 'Livraison effectuée' }), h('span', { class: 'pill ' + statutBL(b)[0], text: statutBL(b)[1] })),
+      h('div', { class: 'small', text: [frHeure(l.at), l.parNom ? 'par ' + l.parNom : '', l.saisie === 'bureau' ? 'pointé depuis le bureau' : '', l.signataire ? 'réceptionné par ' + l.signataire : ''].filter(Boolean).join(' · ') }),
+      l.reserves ? h('div', { class: 'small', text: 'Réserves : ' + l.reserves }) : null,
+      l.commentaire ? h('div', { class: 'small', text: 'Commentaire : ' + l.commentaire }) : null,
+      l.preuve ? h('button', { class: 'btn sm', type: 'button', onclick: () => voirPreuve(l.preuve) }, SP.icon('edit'), 'Voir la signature') : null);
+  }
+
+  /* ---------- Ma tournée : l'écran des chauffeurs ---------- */
+  function mountChauffeur(main) {
+    const moi = SP.auth.profil, bureau = SP.auth.estBureau();
+    const premier = SP.auth.actifs().find(p => p.role === 'chauffeur');
+    S = {
+      tab: 'chauffeur', site: moi.site || 'genas', date: SP.today(), chauffeur: bureau && premier ? premier.id : moi.id,
+      clients: new Map(), blsJour: new Map(), attente: new Map(), echecs: new Map(), tournees: new Map(), reglages: {},
+      charge: { clients: false, bls: false }, lent: false, sel: null, map: null, subs: [], subsDate: [], pane: {}
+    };
+    const st = S;
+    const jour = h('b', { class: 'grow', style: 'text-align:center' });
+    S.syncBar = () => { jour.textContent = (st.date === SP.today() ? 'Aujourd\'hui · ' : '') + SP.frDate(st.date, true); };
+    const qui = bureau ? h('select', { class: 'input', id: 'ch-qui', style: 'max-width:240px', 'aria-label': 'Voir la tournée de', onchange: () => { st.chauffeur = qui.value; refresh(); } }) : null;
+    S.pane.qui = qui; S.pane.liste = h('div', { class: 'stack' });
+    main.appendChild(h('div', { class: 'lv' },
+      h('div', { class: 'lv-bar' },
+        h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Jour précédent', onclick: () => setDate(SP.addDays(st.date, -1)) }, SP.icon('left')),
+        jour,
+        h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Jour suivant', onclick: () => setDate(SP.addDays(st.date, 1)) }, SP.icon('right')),
+        qui),
+      h('div', { class: 'lv-body' }, h('div', { class: 'pane', style: 'max-width:720px' }, S.pane.liste))));
+    S.subs.push(store.watch({ coll: 'clients' }, m => { if (m) st.clients = m; st.charge.clients = true; refresh(); }));
+    S.subs.push(store.watch({ coll: 'reglages' }, m => { if (m) { st.reglages = m.get('livraison') || {}; refresh(); } }));
+    const surProfils = () => { if (S === st) refresh(); }; SP.auth.ecoute.add(surProfils); S.subs.push(() => SP.auth.ecoute.delete(surProfils));
+    S.syncBar(); subDate();
+    geo.load().then(() => { if (S === st) refresh(); }, () => { });
+    refresh();
+    return () => { st.subs.concat(st.subsDate).forEach(f => f()); if (S === st) S = null; };
+  }
+  function drawChauffeur() {
+    const P = S.pane, out = [];
+    if (P.qui) {
+      const cur = S.chauffeur;
+      P.qui.replaceChildren(...SP.auth.actifs().map(p => h('option', { value: p.id, text: 'Tournée de ' + (p.nom || p.email), selected: p.id === cur })));
+      out.push(h('div', { class: 'notice info', text: 'Aperçu bureau : vous voyez l\'écran du chauffeur sélectionné en haut. Les chauffeurs ne voient que leur propre tournée.' }));
+    }
+    const ch = etatChargement(); if (ch) out.push(ch);
+    const gardeSite = S.site; let total = 0, faits = 0;
+    const blocs = [];
+    Object.keys(SITES).forEach(site => {
+      S.site = site; const T = computeTour(); const tous = T.stops.concat(T.sans);
+      if (!tous.length) return;
+      total += tous.length; faits += tous.filter(s => s.fait).length;
+      blocs.push(h('div', { class: 'daysep', text: 'Départ ' + SITES[site].nom + ' · ' + tous.length + ' arrêt' + (tous.length > 1 ? 's' : '') }));
+      tous.forEach((s, i) => blocs.push(carteChauffeur(s, i < T.stops.length ? i + 1 : null)));
+      const liens = liensMaps(T);
+      liens.forEach((u, i) => blocs.push(h('a', { class: 'btn', href: u, target: '_blank', rel: 'noopener' }, SP.icon('ext'), liens.length > 1 ? 'Itinéraire complet, tronçon ' + (i + 1) + '/' + liens.length : 'Itinéraire complet dans Google Maps')));
+    });
+    S.site = gardeSite;
+    if (total) out.push(h('div', { class: 'stats', style: 'grid-template-columns:1fr 1fr' },
+      h('div', null, h('b', { text: faits + ' / ' + total }), h('span', { text: 'Arrêts traités' })),
+      h('div', null, h('b', { text: String(total - faits) }), h('span', { text: 'Restant à livrer' }))));
+    else if (!ch) out.push(h('div', { class: 'card empty', text: 'Aucune livraison prévue ce jour-là.' }));
+    P.liste.replaceChildren(...out, ...blocs);
+  }
+  function carteChauffeur(s, n) {
+    const l = s.lieu;
+    const dest = (l.geo === 'manuel' && hasPos(l)) || !l.ville ? (hasPos(l) ? l.lat + ',' + l.lon : '') : adr(l);
+    const colis = s.bls.reduce((k, b) => k + (Number(b.colis) || 0), 0), poids = s.bls.reduce((k, b) => k + (Number(b.poids) || 0), 0);
+    const l0 = (s.bls[0].livraison) || {};
+    return h('div', { class: 'stop' + (s.fait ? ' done' : ''), style: 'grid-template-columns:auto minmax(0,1fr)' },
+      h('div', { class: 'stop-n', text: n ? String(n) : '?' }),
+      h('div', { class: 'stack', style: 'gap:8px' },
+        h('div', null, h('h3', { text: l.client, style: 'font-size:1.1rem' }),
+          h('div', { class: 'adr', text: [l.libelle, adr(l)].filter(Boolean).join(' · ') || 'Adresse à demander au bureau' }),
+          l.horaires ? h('div', { class: 'adr', text: l.horaires }) : null,
+          (l.contact || l.tel) ? h('div', { class: 'adr' }, [l.contact, ''].filter(Boolean).join(' · '), l.contact && l.tel ? ' · ' : '', l.tel ? h('a', { href: 'tel:' + String(l.tel).replace(/[^\d+]/g, ''), text: l.tel }) : null) : null),
+        h('div', { class: 'meta', style: 'margin:0' },
+          s.bls.map(b => h('span', { class: 'pill neutral', text: 'BL ' + b.numero })),
+          (colis || poids) ? h('span', { class: 'pill neutral num', text: [colis ? colis + ' colis' : '', poids ? SP.fmt(poids) + ' kg' : ''].filter(Boolean).join(' · ') }) : null,
+          pillStop(s)),
+        s.bls.filter(b => b.note).map(b => h('div', { class: 'notice info', text: 'BL ' + b.numero + ' : ' + b.note })),
+        s.fait ? h('div', { class: 'small muted', text: [frHeure(l0.at), l0.signataire ? 'réceptionné par ' + l0.signataire : '', l0.reserves ? 'réserves : ' + l0.reserves : '', l0.commentaire || ''].filter(Boolean).join(' · ') }) : null,
+        h('div', { class: 'row' },
+          dest ? h('a', { class: 'btn', href: 'https://www.google.com/maps/dir/?' + new URLSearchParams({ api: '1', destination: dest, travelmode: 'driving' }).toString(), target: '_blank', rel: 'noopener' }, SP.icon('pin'), 'GPS') : null,
+          s.fait ? h('button', { class: 'btn', type: 'button', onclick: () => feuilleLivraison(s) }, SP.icon('edit'), 'Corriger')
+            : [h('button', { class: 'btn primary grow', type: 'button', onclick: () => feuilleLivraison(s) }, SP.icon('check'), 'Livrer'),
+              h('button', { class: 'btn danger', type: 'button', onclick: () => feuilleProbleme(s) }, 'Problème')])));
+  }
+  async function enregistrerLivraison(stop, statut, infos) {
+    const base = { at: new Date().toISOString(), par: SP.auth.profil.id, parNom: SP.auth.profil.nom || '' };
+    const jobs = stop.bls.map(b => () => { const d = Object.assign({}, b); delete d.id; d.statut = statut; d.livraison = Object.assign({}, base, infos); d.maj = base.at; return store.update('bls', b.id, d); });
+    return (await store.batch(jobs)) === jobs.length;
+  }
+  function feuilleLivraison(stop) {
+    const m = SP.modal({ titre: 'Livraison : ' + stop.lieu.client, verrou: true });
+    const nom = h('input', { class: 'input', id: 'lv-signataire', autocomplete: 'off', placeholder: 'Prénom et nom' });
+    const avec = h('input', { type: 'checkbox', id: 'lv-avec-reserves', onchange: () => { res.style.display = avec.checked ? '' : 'none'; } });
+    const res = h('textarea', { class: 'input', id: 'lv-reserves', placeholder: 'Colis abîmé, manquant, emballage ouvert…', style: 'display:none' });
+    const cv = h('canvas', { style: 'width:100%;height:190px;background:#fff;border:1px solid var(--line);border-radius:8px;touch-action:none;display:block', 'aria-label': 'Zone de signature' });
+    let signe = false, last = null;
+    const ctx = cv.getContext('2d');
+    function taille() { const r = cv.getBoundingClientRect(); if (!r.width) return; cv.width = Math.round(r.width * 2); cv.height = Math.round(r.height * 2); ctx.scale(2, 2); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, r.width, r.height); ctx.strokeStyle = '#14263A'; ctx.lineWidth = 2.200; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; signe = false; }
+    const pos = e => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+    cv.addEventListener('pointerdown', e => { e.preventDefault(); cv.setPointerCapture(e.pointerId); last = pos(e); ctx.beginPath(); ctx.arc(last[0], last[1], 1.100, 0, 6.300); ctx.fillStyle = '#14263A'; ctx.fill(); signe = true; });
+    cv.addEventListener('pointermove', e => { if (!last) return; const p = pos(e); ctx.beginPath(); ctx.moveTo(last[0], last[1]); ctx.lineTo(p[0], p[1]); ctx.stroke(); last = p; });
+    const fin = () => { last = null; }; cv.addEventListener('pointerup', fin); cv.addEventListener('pointercancel', fin);
+    m.body.append(
+      h('div', { class: 'small muted', text: stop.bls.map(b => 'BL ' + b.numero).join(', ') + ' · ' + adr(stop.lieu) }),
+      h('label', { class: 'field' }, h('span', { text: 'Personne qui réceptionne *' }), nom),
+      h('label', { class: 'row', for: 'lv-avec-reserves' }, avec, h('span', { text: 'Le client émet des réserves' })), res,
+      h('div', { class: 'field' }, h('div', { class: 'row' }, h('span', { class: 'grow', text: 'Signature du client *' }), h('button', { class: 'btn sm', type: 'button', onclick: taille }, 'Effacer')), cv));
+    const ok = h('button', { class: 'btn primary', type: 'button', onclick: async () => {
+      if (!nom.value.trim()) { SP.toast('Indiquez le nom de la personne qui réceptionne.', true); return; }
+      if (!signe) { SP.toast('Faites signer le client dans le cadre blanc.', true); return; }
+      if (avec.checked && !res.value.trim()) { SP.toast('Décrivez les réserves du client.', true); return; }
+      ok.disabled = true;
+      const pid = store.newId(), reserves = avec.checked ? res.value.trim() : '';
+      const preuve = { bl: stop.bls.map(b => b.id).join(','), date: S.date, client: stop.lieu.client, lieu: adr(stop.lieu), signataire: nom.value.trim(), reserves, signature: cv.toDataURL('image/png'), at: new Date().toISOString(), par: SP.auth.profil.id, parNom: SP.auth.profil.nom || '' };
+      if (await store.insert('preuves', pid, preuve) && await enregistrerLivraison(stop, 'livre', { signataire: preuve.signataire, reserves, preuve: pid })) { SP.toast('Livraison enregistrée.'); m.close(); }
+      else ok.disabled = false;
+    } }, 'Valider la livraison');
+    m.setActions(h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Annuler'), ok);
+    requestAnimationFrame(taille);
+  }
+  function feuilleProbleme(stop) {
+    const m = SP.modal({ titre: 'Problème : ' + stop.lieu.client });
+    const motif = h('select', { class: 'input', id: 'lv-motif' }, ['Client absent', 'Site fermé', 'Marchandise refusée', 'Adresse introuvable', 'Accès impossible', 'Autre'].map(t => h('option', { value: t, text: t })));
+    const com = h('textarea', { class: 'input', id: 'lv-commentaire', placeholder: 'Précisions pour le bureau' });
+    m.body.append(h('div', { class: 'small muted', text: stop.bls.map(b => 'BL ' + b.numero).join(', ') }),
+      h('label', { class: 'field' }, h('span', { text: 'Motif' }), motif), h('label', { class: 'field' }, h('span', { text: 'Commentaire' }), com),
+      h('div', { class: 'small muted', text: 'Le bureau voit le problème immédiatement dans SP WORK. En cas d\'urgence, appelez-le aussi.' }));
+    const ok = h('button', { class: 'btn primary', type: 'button', onclick: async () => {
+      if (motif.value === 'Autre' && !com.value.trim()) { SP.toast('Précisez le problème en commentaire.', true); return; }
+      ok.disabled = true;
+      if (await enregistrerLivraison(stop, 'echec', { motif: motif.value, commentaire: com.value.trim() })) { SP.toast('Problème signalé au bureau.'); m.close(); } else ok.disabled = false;
+    } }, 'Signaler au bureau');
+    m.setActions(h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Annuler'), ok);
+  }
+
+  /* ---------- utilisateurs (bureau) ---------- */
+  function blocUtilisateurs() {
+    const zone = h('div', { class: 'stack' });
+    const draw = () => {
+      if (!zone.isConnected && zone.children.length) { SP.auth.ecoute.delete(draw); return; }
+      const moi = SP.auth.profil.id;
+      const tous = [...SP.auth.profils.values()].sort((a, b) => (a.actif === b.actif ? 0 : a.actif ? 1 : -1) || String(a.nom).localeCompare(String(b.nom), 'fr'));
+      zone.replaceChildren(h('b', { text: 'Utilisateurs' }),
+        h('div', { class: 'small muted', text: 'Chaque personne crée son compte depuis l\'écran de connexion de SP WORK. Elle apparaît ensuite ici, « en attente » : cochez « Actif » et choisissez son rôle. Un chauffeur ne voit que sa tournée ; le bureau voit tout.' }),
+        ...tous.map((p, n) => {
+          const nom = h('input', { class: 'input', id: 'us-nom-' + n, value: p.nom || '', 'aria-label': 'Nom', onchange: () => SP.auth.majProfil(p.id, { nom: nom.value.trim() }) });
+          const role = h('select', { class: 'input', id: 'us-role-' + n, 'aria-label': 'Rôle', disabled: p.id === moi, onchange: () => SP.auth.majProfil(p.id, { role: role.value }) }, h('option', { value: 'chauffeur', text: 'Chauffeur', selected: p.role === 'chauffeur' }), h('option', { value: 'bureau', text: 'Bureau', selected: p.role === 'bureau' }));
+          const site = h('select', { class: 'input', id: 'us-site-' + n, 'aria-label': 'Site', onchange: () => SP.auth.majProfil(p.id, { site: site.value }) }, Object.keys(SITES).map(k => h('option', { value: k, text: SITES[k].nom, selected: p.site === k })));
+          const actif = h('input', { type: 'checkbox', id: 'us-actif-' + n, checked: p.actif, disabled: p.id === moi, onchange: () => SP.auth.majProfil(p.id, { actif: actif.checked }) });
+          return h('div', { class: 'pointbox' },
+            h('div', { class: 'row' }, h('span', { class: 'grow small muted', text: p.email || '' }), p.actif ? null : h('span', { class: 'pill warn', text: 'En attente' }), h('label', { class: 'row', for: 'us-actif-' + n }, actif, h('span', { text: 'Actif' }))),
+            h('div', { class: 'fgrid' }, nom, role, site));
+        }));
+    };
+    SP.auth.ecoute.add(draw); draw();
+    return zone;
+  }
+
 
   /* ---------- position sur la carte ---------- */
   function choisirPosition(depuis, titre) {
@@ -418,12 +638,13 @@
     const src = id ? (S.blsJour.get(id) || S.attente.get(id) || await store.get('bls', id)) : null;
     if (id && !src) { SP.toast('Ce BL n\'existe plus.', true); return; }
     const neuf = !src;
-    const b = src ? JSON.parse(JSON.stringify(src)) : { numero: '', date: S.date, site: S.site, clientId: '', pointId: '', colis: '', poids: '', note: '', statut: 'a-livrer' };
+    const b = src ? JSON.parse(JSON.stringify(src)) : { numero: '', date: S.date, site: S.site, chauffeur: S.chauffeur || '', clientId: '', pointId: '', colis: '', poids: '', note: '', statut: 'a-livrer' };
     let autre = !!b.lieu, lieu = b.lieu ? Object.assign({}, b.lieu) : {}, garder = false, nomLibre = '';
     const m = SP.modal({ titre: neuf ? 'Nouveau bon de livraison' : 'BL ' + b.numero, large: true });
     const inp = (k, label, extra) => { const i = h('input', Object.assign({ class: 'input', id: 'bl-' + k, value: b[k] == null ? '' : b[k], oninput: () => { b[k] = i.value.trim(); } }, extra || {})); return h('label', { class: 'field' }, h('span', { text: label }), i); };
     const siteSel = h('select', { class: 'input', id: 'bl-site', onchange: () => { b.site = siteSel.value; } }, Object.keys(SITES).map(k => h('option', { value: k, text: SITES[k].nom, selected: b.site === k })));
-    const statSel = h('select', { class: 'input', id: 'bl-statut', onchange: () => { b.statut = statSel.value; } }, h('option', { value: 'a-livrer', text: 'À livrer', selected: b.statut !== 'livre' }), h('option', { value: 'livre', text: 'Livré', selected: b.statut === 'livre' }));
+    const statSel = h('select', { class: 'input', id: 'bl-statut', onchange: () => { b.statut = statSel.value; } }, h('option', { value: 'a-livrer', text: 'À livrer', selected: b.statut !== 'livre' && b.statut !== 'echec' }), h('option', { value: 'livre', text: 'Livré', selected: b.statut === 'livre' }), h('option', { value: 'echec', text: 'Non livré (problème)', selected: b.statut === 'echec' }));
+    const chSel = h('select', { class: 'input', id: 'bl-chauffeur', onchange: () => { b.chauffeur = chSel.value; } }, h('option', { value: '', text: 'Sans chauffeur', selected: !b.chauffeur }), SP.auth.actifs().map(p => h('option', { value: p.id, text: p.nom || p.email, selected: b.chauffeur === p.id })));
     const zClient = h('div', { class: 'stack' }), zLieu = h('div', { class: 'stack' });
 
     function drawClient() {
@@ -466,8 +687,9 @@
     }
     m.body.append(
       h('div', { class: 'fgrid' }, inp('numero', 'N° de BL *', neuf ? {} : { disabled: true }), inp('date', 'Date de livraison', { type: 'date' }),
-        h('label', { class: 'field' }, h('span', { text: 'Départ' }), siteSel)),
-      zClient, zLieu,
+        h('label', { class: 'field' }, h('span', { text: 'Départ' }), siteSel),
+        h('label', { class: 'field' }, h('span', { text: 'Chauffeur' }), chSel)),
+      blocLivraison(b), zClient, zLieu,
       h('div', { class: 'fgrid' }, inp('colis', 'Nombre de colis', { inputmode: 'numeric' }), inp('poids', 'Poids (kg)', { inputmode: 'decimal' }),
         h('label', { class: 'field' }, h('span', { text: 'Statut' }), statSel)),
       inp('note', 'Note pour le chauffeur'));
@@ -494,6 +716,7 @@
         } else delete b.lieu;
         b.colis = b.colis === '' ? '' : (Number(String(b.colis).replace(',', '.')) || 0);
         b.poids = b.poids === '' ? '' : (Number(String(b.poids).replace(',', '.').replace(/\s/g, '')) || 0);
+        if (b.statut === 'a-livrer') delete b.livraison;
         b.maj = new Date().toISOString();
         if (await store.set('bls', bid, b)) { SP.toast('BL ' + b.numero + ' enregistré.'); m.close(); }
       } }, 'Enregistrer'));
@@ -509,7 +732,8 @@
       return h('div', { class: 'pointbox' }, h('b', { text: 'Dépôt de ' + SITES[k].nom }), blocAdresse(d, 'dep-' + k));
     }),
       h('div', { class: 'fgrid' }, num('vitesse', 'Vitesse moyenne (km/h)'), num('arret', 'Temps par arrêt (min)'), num('coef', 'Coefficient route / vol d\'oiseau')),
-      h('div', { class: 'small muted', text: 'Ces trois valeurs servent aux estimations de distance et de durée. Ajustez-les après quelques tournées réelles.' }));
+      h('div', { class: 'small muted', text: 'Ces trois valeurs servent aux estimations de distance et de durée. Ajustez-les après quelques tournées réelles.' }),
+      blocUtilisateurs());
     m.setActions(h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Annuler'),
       h('button', { class: 'btn primary', type: 'button', onclick: async () => { if (await store.set('reglages', 'livraison', r)) { SP.toast('Réglages enregistrés.'); m.close(); } } }, 'Enregistrer'));
   }
@@ -590,7 +814,7 @@
           const cp = /^\d{4}$/.test(r.cp) ? '0' + r.cp : r.cp;
           const g = (cp || r.ville) ? geo.locate(cp, r.ville) : null;
           const lieu = (cp || r.ville) ? Object.assign({ adresse: r.adresse, cp, ville: r.ville, geo: g ? 'commune' : 'aucun' }, g ? { lat: g.lat, lon: g.lon, commune: g.commune } : {}) : null;
-          const b = { numero: r.numero, date: SP.parseDate(r.date) || S.date, site: S.site, colis: numv(r.colis), poids: numv(r.poids), note: r.note || '', statut: 'a-livrer', maj: new Date().toISOString() };
+          const b = { numero: r.numero, date: SP.parseDate(r.date) || S.date, site: S.site, chauffeur: '', colis: numv(r.colis), poids: numv(r.poids), note: r.note || '', statut: 'a-livrer', maj: new Date().toISOString() };
           if (!cid && (r.nom || r.code)) {
             cid = store.newId('clients');
             const nc = { nom: r.nom || ('Client ' + r.code), code: r.code || '', points: lieu ? [Object.assign({ id: SP.uid(), libelle: 'Principal' }, lieu)] : [], maj: b.maj };
@@ -641,4 +865,5 @@
   }
 
   SP.registerApp({ id: 'livraison', nom: 'Livraison', icone: 'truck', etat: 'actif', desc: 'Clients, bons de livraison et circuit optimisé sur carte.', mount });
+  SP.registerApp({ id: 'ma-tournee', nom: 'Ma tournée', icone: 'route', etat: 'actif', desc: 'L\'écran des chauffeurs : arrêts du jour, signature du client, réserves.', mount: mountChauffeur });
 })();
