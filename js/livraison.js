@@ -182,7 +182,7 @@
     S.el.body.appendChild(h('div', { class: 'pane' },
       h('div', { class: 'pane-head' }, P.titre,
         P.selCh = h('select', { class: 'input', id: 'lv-chauffeur', style: 'width:auto;max-width:260px', 'aria-label': 'Chauffeur de la tournée', onchange: () => { S.chauffeur = P.selCh.value; S.sel = null; if (S.map) S.map.fit(); refresh(); } }),
-        P.btnAff = h('button', { class: 'btn', type: 'button', onclick: () => { const T = computeTour(); affecter(T.stops.concat(T.sans), true); } }, SP.icon('users'), 'Affecter'),
+        P.btnAff = h('button', { class: 'btn', type: 'button', onclick: () => { const T = computeTour(); affecter(T.stops.concat(T.sans), true); } }, SP.icon('users'), 'Attribuer (facultatif)'),
         h('button', { class: 'btn', type: 'button', onclick: importPDF }, SP.icon('doc'), 'Lire des BL en PDF'),
         h('button', { class: 'btn', type: 'button', onclick: () => editBL(null) }, SP.icon('plus'), 'Ajouter un BL'),
         P.btnOpt = h('button', { class: 'btn primary', type: 'button', onclick: optimiser }, SP.icon('route'), 'Optimiser le circuit')),
@@ -200,7 +200,7 @@
     P.btnAff.disabled = !(T.stops.length + T.sans.length);
     const compte = new Map(); S.blsJour.forEach(b => { if ((b.site || 'genas') === S.site) compte.set(b.chauffeur || '', (compte.get(b.chauffeur || '') || 0) + 1); });
     const ids = SP.auth.actifs().map(p => p.id); compte.forEach((n, id) => { if (id && ids.indexOf(id) < 0) ids.push(id); });
-    P.selCh.replaceChildren(h('option', { value: '', text: 'Sans chauffeur (' + (compte.get('') || 0) + ' BL)', selected: !S.chauffeur }),
+    P.selCh.replaceChildren(h('option', { value: '', text: 'Tous les chauffeurs (' + (compte.get('') || 0) + ' BL)', selected: !S.chauffeur }),
       ...ids.map(id => h('option', { value: id, text: (SP.auth.nom(id) || 'Compte supprimé') + ' (' + (compte.get(id) || 0) + ' BL)', selected: S.chauffeur === id })));
     P.stats.replaceChildren(
       h('div', null, h('b', { text: String(T.stops.length) }), h('span', { text: 'Arrêts' })),
@@ -250,7 +250,7 @@
         liens.map((u, i) => h('a', { class: 'btn brand', href: u, target: '_blank', rel: 'noopener' }, SP.icon('ext'), liens.length > 1 ? 'Itinéraire routier Google Maps, tronçon ' + (i + 1) + '/' + liens.length : 'Itinéraire routier dans Google Maps')),
         h('div', { class: 'small muted', text: 'Les kilomètres et la durée affichés ici sont des estimations (distance à vol d\'oiseau × ' + SP.fmt(reglage('coef'), 1) + ', ' + reglage('vitesse') + ' km/h, ' + reglage('arret') + ' min par arrêt). Google Maps donne le trajet routier réel dans l\'ordre calculé.' })));
     } else if (!etatChargement() && (S.clients.size || S.blsJour.size)) {
-      items.push(h('div', { class: 'card empty' }, 'Aucune livraison ' + (S.chauffeur ? 'affectée à ' + SP.auth.nom(S.chauffeur) : 'sans chauffeur') + ' au départ de ' + SITES[S.site].nom + ' ce jour-là. Changez de chauffeur dans la liste, ajoutez un BL ou changez de date.'));
+      items.push(h('div', { class: 'card empty' }, 'Aucune livraison ' + (S.chauffeur ? 'attribuée à ' + SP.auth.nom(S.chauffeur) : 'ouverte à tous les chauffeurs') + ' au départ de ' + SITES[S.site].nom + ' ce jour-là. Changez de chauffeur dans la liste, ajoutez un BL ou changez de date.'));
     }
     P.liste.replaceChildren(...items);
 
@@ -383,7 +383,7 @@
       else { SP.toast(nb + ' BL affecté(s) à ' + (cible ? SP.auth.nom(cible) : 'personne') + '.'); if (tout) { S.chauffeur = cible; S.sel = null; if (S.map) S.map.fit(); refresh(); } }
     };
     const liste = SP.auth.actifs().filter(p => p.id !== S.chauffeur);
-    m.body.append(h('div', { class: 'small muted', text: nb + ' BL concerné(s). Le chauffeur les verra dans « Ma tournée » sur son téléphone.' }),
+    m.body.append(h('div', { class: 'small muted', text: nb + ' BL concerné(s). L\'attribution est facultative : sans chauffeur attribué, un BL est visible par tous les chauffeurs dans « Ma tournée ». Attribué, seul ce chauffeur le voit.' }),
       h('div', { class: 'sugg', style: 'max-height:none' },
         liste.map(p => h('button', { type: 'button', onclick: () => go(p.id) }, h('b', { text: p.nom || p.email }), ' · ' + (p.role === 'chauffeur' ? 'chauffeur' : 'bureau') + ', ' + (SITES[p.site] || SITES.genas).nom)),
         S.chauffeur ? h('button', { type: 'button', onclick: () => go('') }, 'Retirer l\'affectation') : null),
@@ -444,20 +444,24 @@
     if (P.qui) {
       const cur = S.chauffeur;
       P.qui.replaceChildren(...SP.auth.actifs().map(p => h('option', { value: p.id, text: 'Tournée de ' + (p.nom || p.email), selected: p.id === cur })));
-      out.push(h('div', { class: 'notice info', text: 'Aperçu bureau : vous voyez l\'écran du chauffeur sélectionné en haut. Les chauffeurs ne voient que leur propre tournée.' }));
+      out.push(h('div', { class: 'notice info', text: 'Aperçu bureau : vous voyez l\'écran du chauffeur sélectionné en haut. Chaque chauffeur voit les livraisons qui lui sont attribuées, plus celles du jour sans chauffeur attribué.' }));
     }
     const ch = etatChargement(); if (ch) out.push(ch);
-    const gardeSite = S.site; let total = 0, faits = 0;
+    const gardeSite = S.site, gardeCh = S.chauffeur; let total = 0, faits = 0;
     const blocs = [];
-    Object.keys(SITES).forEach(site => {
-      S.site = site; const T = computeTour(); const tous = T.stops.concat(T.sans);
-      if (!tous.length) return;
-      total += tous.length; faits += tous.filter(s => s.fait).length;
-      blocs.push(h('div', { class: 'daysep', text: 'Départ ' + SITES[site].nom + ' · ' + tous.length + ' arrêt' + (tous.length > 1 ? 's' : '') }));
-      tous.forEach((s, i) => blocs.push(carteChauffeur(s, i < T.stops.length ? i + 1 : null)));
-      const liens = liensMaps(T);
-      liens.forEach((u, i) => blocs.push(h('a', { class: 'btn', href: u, target: '_blank', rel: 'noopener' }, SP.icon('ext'), liens.length > 1 ? 'Itinéraire complet, tronçon ' + (i + 1) + '/' + liens.length : 'Itinéraire complet dans Google Maps')));
+    /* les livraisons attribuées à ce chauffeur, puis celles du jour sans chauffeur attribué (visibles par tous) */
+    [gardeCh, ''].filter((c, i, t) => t.indexOf(c) === i).forEach(ch => {
+      Object.keys(SITES).forEach(site => {
+        S.site = site; S.chauffeur = ch; const T = computeTour(); const tous = T.stops.concat(T.sans);
+        if (!tous.length) return;
+        total += tous.length; faits += tous.filter(s => s.fait).length;
+        blocs.push(h('div', { class: 'daysep', text: (ch ? 'Mes livraisons' : 'Livraisons du jour') + ' · départ ' + SITES[site].nom + ' · ' + tous.length + ' arrêt' + (tous.length > 1 ? 's' : '') }));
+        tous.forEach((s, i) => blocs.push(carteChauffeur(s, i < T.stops.length ? i + 1 : null)));
+        const liens = liensMaps(T);
+        liens.forEach((u, i) => blocs.push(h('a', { class: 'btn', href: u, target: '_blank', rel: 'noopener' }, SP.icon('ext'), liens.length > 1 ? 'Itinéraire complet, tronçon ' + (i + 1) + '/' + liens.length : 'Itinéraire complet dans Google Maps')));
+      });
     });
+    S.chauffeur = gardeCh;
     S.site = gardeSite;
     if (total) out.push(h('div', { class: 'stats', style: 'grid-template-columns:1fr 1fr' },
       h('div', null, h('b', { text: faits + ' / ' + total }), h('span', { text: 'Arrêts traités' })),
@@ -647,7 +651,7 @@
     const inp = (k, label, extra) => { const i = h('input', Object.assign({ class: 'input', id: 'bl-' + k, value: b[k] == null ? '' : b[k], oninput: () => { b[k] = i.value.trim(); } }, extra || {})); return h('label', { class: 'field' }, h('span', { text: label }), i); };
     const siteSel = h('select', { class: 'input', id: 'bl-site', onchange: () => { b.site = siteSel.value; } }, Object.keys(SITES).map(k => h('option', { value: k, text: SITES[k].nom, selected: b.site === k })));
     const statSel = h('select', { class: 'input', id: 'bl-statut', onchange: () => { b.statut = statSel.value; } }, h('option', { value: 'a-livrer', text: 'À livrer', selected: b.statut !== 'livre' && b.statut !== 'echec' }), h('option', { value: 'livre', text: 'Livré', selected: b.statut === 'livre' }), h('option', { value: 'echec', text: 'Non livré (problème)', selected: b.statut === 'echec' }));
-    const chSel = h('select', { class: 'input', id: 'bl-chauffeur', onchange: () => { b.chauffeur = chSel.value; } }, h('option', { value: '', text: 'Sans chauffeur', selected: !b.chauffeur }), SP.auth.actifs().map(p => h('option', { value: p.id, text: p.nom || p.email, selected: b.chauffeur === p.id })));
+    const chSel = h('select', { class: 'input', id: 'bl-chauffeur', onchange: () => { b.chauffeur = chSel.value; } }, h('option', { value: '', text: 'Tous les chauffeurs', selected: !b.chauffeur }), SP.auth.actifs().map(p => h('option', { value: p.id, text: p.nom || p.email, selected: b.chauffeur === p.id })));
     const zClient = h('div', { class: 'stack' }), zLieu = h('div', { class: 'stack' });
 
     function drawClient() {
