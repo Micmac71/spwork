@@ -403,7 +403,7 @@
       else { SP.toast(nb + ' BL affecté(s) à ' + (cible ? SP.auth.nom(cible) : 'personne') + '.'); if (tout) { S.chauffeur = cible; S.sel = null; if (S.map) S.map.fit(); refresh(); } }
     };
     const liste = SP.auth.actifs().filter(p => p.id !== S.chauffeur);
-    m.body.append(h('div', { class: 'small muted', text: nb + ' BL concerné(s). L\'attribution est facultative : sans chauffeur attribué, un BL est visible par tous les chauffeurs dans « Ma tournée ». Attribué, seul ce chauffeur le voit.' }),
+    m.body.append(h('div', { class: 'small muted', text: nb + ' BL concerné(s). L\'attribution est facultative et sert seulement à s\'organiser : tous les BL du jour restent visibles et livrables par tous dans « Ma tournée », avec le nom du chauffeur prévu.' }),
       h('div', { class: 'sugg', style: 'max-height:none' },
         liste.map(p => h('button', { type: 'button', onclick: () => go(p.id) }, h('b', { text: p.nom || p.email }), ' · ' + (p.role === 'chauffeur' ? 'chauffeur' : 'bureau') + ', ' + (SITES[p.site] || SITES.genas).nom)),
         S.chauffeur ? h('button', { type: 'button', onclick: () => go('') }, 'Retirer l\'affectation') : null),
@@ -435,14 +435,14 @@
     const moi = SP.auth.profil, bureau = SP.auth.estBureau();
     const premier = SP.auth.actifs().find(p => p.role === 'chauffeur');
     S = {
-      tab: 'chauffeur', site: moi.site || 'genas', date: SP.today(), chauffeur: bureau && premier ? premier.id : moi.id,
+      tab: 'chauffeur', site: moi.site || 'genas', date: SP.today(), chauffeur: moi.id,
       clients: new Map(), blsJour: new Map(), attente: new Map(), echecs: new Map(), tournees: new Map(), reglages: {},
       charge: { clients: false, bls: false }, lent: false, sel: null, map: null, subs: [], subsDate: [], pane: {}
     };
     const st = S;
     const jour = h('b', { class: 'grow', style: 'text-align:center' });
     S.syncBar = () => { jour.textContent = (st.date === SP.today() ? 'Aujourd\'hui · ' : '') + SP.frDate(st.date, true); };
-    const qui = bureau ? h('select', { class: 'input', id: 'ch-qui', style: 'max-width:240px', 'aria-label': 'Voir la tournée de', onchange: () => { st.chauffeur = qui.value; refresh(); } }) : null;
+    const qui = null;
     S.pane.qui = qui; S.pane.liste = h('div', { class: 'stack' });
     main.appendChild(h('div', { class: 'lv' },
       h('div', { class: 'lv-bar' },
@@ -461,21 +461,17 @@
   }
   function drawChauffeur() {
     const P = S.pane, out = [];
-    if (P.qui) {
-      const cur = S.chauffeur;
-      P.qui.replaceChildren(...SP.auth.actifs().map(p => h('option', { value: p.id, text: 'Tournée de ' + (p.nom || p.email), selected: p.id === cur })));
-      out.push(h('div', { class: 'notice info', text: 'Aperçu bureau : vous voyez l\'écran du chauffeur sélectionné en haut. Chaque chauffeur voit les livraisons qui lui sont attribuées, plus celles du jour sans chauffeur attribué.' }));
-    }
     const ch = etatChargement(); if (ch) out.push(ch);
     const gardeSite = S.site, gardeCh = S.chauffeur; let total = 0, faits = 0;
     const blocs = [];
     /* les livraisons attribuées à ce chauffeur, puis celles du jour sans chauffeur attribué (visibles par tous) */
-    [gardeCh, ''].filter((c, i, t) => t.indexOf(c) === i).forEach(ch => {
+    const autres = [...new Set([...S.blsJour.values()].map(b => b.chauffeur || ''))].filter(c => c && c !== gardeCh).sort((a, b) => SP.auth.nom(a).localeCompare(SP.auth.nom(b), 'fr'));
+    [gardeCh, ''].concat(autres).filter((c, i, t) => t.indexOf(c) === i).forEach(ch => {
       Object.keys(SITES).forEach(site => {
         S.site = site; S.chauffeur = ch; const T = computeTour(); const tous = T.stops.concat(T.sans);
         if (!tous.length) return;
         total += tous.length; faits += tous.filter(s => s.fait).length;
-        blocs.push(h('div', { class: 'daysep', text: (ch ? 'Mes livraisons' : 'Livraisons du jour') + ' · départ ' + SITES[site].nom + ' · ' + tous.length + ' arrêt' + (tous.length > 1 ? 's' : '') }));
+        blocs.push(h('div', { class: 'daysep', text: (ch === gardeCh && ch ? 'Mes livraisons' : ch ? 'Prévu pour ' + (SP.auth.nom(ch) || 'un autre chauffeur') : 'Livraisons du jour') + ' · départ ' + SITES[site].nom + ' · ' + tous.length + ' arrêt' + (tous.length > 1 ? 's' : '') }));
         tous.forEach((s, i) => blocs.push(carteChauffeur(s, i < T.stops.length ? i + 1 : null)));
         const liens = liensMaps(T);
         liens.forEach((u, i) => blocs.push(h('a', { class: 'btn', href: u, target: '_blank', rel: 'noopener' }, SP.icon('ext'), liens.length > 1 ? 'Itinéraire complet, tronçon ' + (i + 1) + '/' + liens.length : 'Itinéraire complet dans Google Maps')));
