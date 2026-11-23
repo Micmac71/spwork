@@ -608,6 +608,50 @@
     m.setActions(h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Annuler'), ok);
   }
 
+  /* ---------- sauvegarde et export (bureau) ---------- */
+  function telechargerFichier(nom, contenu, type) {
+    const u = URL.createObjectURL(new Blob([contenu], { type })), a = h('a', { href: u, download: nom });
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(u), 4000);
+  }
+  function blocSauvegarde() {
+    const info = h('div', { class: 'small muted' });
+    const maj = () => { const d = prefs.get('sauvegarde', ''); info.textContent = d ? 'Dernière sauvegarde complète téléchargée sur cet appareil : ' + frHeure(d) + '.' : 'Aucune sauvegarde complète téléchargée depuis cet appareil.'; };
+    maj();
+    const complet = h('button', { class: 'btn', type: 'button', onclick: async () => {
+      complet.disabled = true; const avant = complet.lastChild.textContent; complet.lastChild.textContent = 'Préparation…';
+      try {
+        const out = { application: 'SP WORK', version: 1, date: new Date().toISOString(), tables: {} }; let n = 0;
+        for (const c of ['clients', 'bls', 'tournees', 'reglages', 'preuves']) { const m = await store.query(c); out.tables[c] = [...m].map(e => ({ id: e[0], data: e[1] })); n += m.size; }
+        out.tables.profils = [...SP.auth.profils.values()];
+        telechargerFichier('spwork-sauvegarde-' + SP.today() + '.json', JSON.stringify(out), 'application/json');
+        prefs.set('sauvegarde', out.date); maj();
+        SP.toast('Sauvegarde téléchargée : ' + out.tables.clients.length + ' clients, ' + out.tables.bls.length + ' BL, ' + out.tables.preuves.length + ' signatures.');
+      } catch (e) { SP.toast('Sauvegarde impossible pour l\'instant. Réessayez.', true); }
+      complet.disabled = false; complet.lastChild.textContent = avant;
+    } }, SP.icon('doc'), 'Sauvegarde complète');
+    const liste = h('button', { class: 'btn', type: 'button', onclick: async () => {
+      liste.disabled = true;
+      try {
+        const m = await store.query('bls');
+        const q = v => { const t = String(v == null ? '' : v).replace(/"/g, '""').replace(/\r?\n/g, ' '); return /^0\d+$/.test(t) ? '"=""' + t + '"""' : '"' + t + '"'; };
+        const lib = { 'a-livrer': 'À livrer', livre: 'Livré', echec: 'Non livré' };
+        const rows = [['N° BL', 'Date de livraison', 'Départ', 'Client', 'Lieu de livraison', 'Adresse', 'Code postal', 'Ville', 'Commande client', 'Statut', 'Livré le', 'Livré par', 'Réceptionné par', 'Réserves', 'Motif de non-livraison', 'BL signé envoyé à', 'Contenu']];
+        [...m.values()].sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')) || String(a.numero).localeCompare(String(b.numero))).forEach(b => {
+          const l = lieuBL(b), v = b.livraison || {};
+          rows.push([b.numero, b.date ? b.date.split('-').reverse().join('/') : '', (SITES[b.site] || {}).nom || '', l.client, l.libelle || '', l.adresse || '', l.cp || '', l.ville || '', b.commande || '', lib[b.statut] || b.statut || '',
+            v.at && b.statut !== 'a-livrer' ? new Date(v.at).toLocaleString('fr-FR') : '', v.parNom || '', v.signataire || '', v.reserves || '', b.statut === 'echec' ? [v.motif, v.commentaire].filter(Boolean).join(' - ') : '', v.email && v.email.etat === 'envoye' ? v.email.a : '',
+            (b.lignes || []).map(x => (x.qte ? x.qte + ' x ' : '') + x.des).join(' | ')]);
+        });
+        telechargerFichier('spwork-bons-de-livraison-' + SP.today() + '.csv', '\uFEFF' + rows.map(r => r.map(q).join(';')).join('\r\n'), 'text/csv;charset=utf-8');
+        SP.toast('Liste de ' + (rows.length - 1) + ' BL téléchargée.');
+      } catch (e) { SP.toast('Export impossible pour l\'instant. Réessayez.', true); }
+      liste.disabled = false;
+    } }, SP.icon('chart'), 'Liste des BL pour Excel');
+    return h('div', { class: 'stack' }, h('b', { text: 'Sauvegarde des données' }),
+      h('div', { class: 'small muted', text: 'La sauvegarde complète contient les clients, les BL, les tournées, les signatures et les comptes, dans un seul fichier. Téléchargez-la chaque semaine et rangez-la dans un dossier de l\'entreprise : elle permet de reconstruire la base en cas de perte. La liste pour Excel sert à consulter ou analyser les livraisons.' }),
+      h('div', { class: 'row' }, complet, liste), info);
+  }
+
   /* ---------- utilisateurs (bureau) ---------- */
   function blocUtilisateurs() {
     const zone = h('div', { class: 'stack' });
@@ -805,7 +849,7 @@
     }),
       h('div', { class: 'fgrid' }, num('vitesse', 'Vitesse moyenne (km/h)'), num('arret', 'Temps par arrêt (min)'), num('coef', 'Coefficient route / vol d\'oiseau')),
       h('div', { class: 'small muted', text: 'Ces trois valeurs servent aux estimations de distance et de durée. Ajustez-les après quelques tournées réelles.' }),
-      blocUtilisateurs());
+      blocUtilisateurs(), blocSauvegarde());
     m.setActions(h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Annuler'),
       h('button', { class: 'btn primary', type: 'button', onclick: async () => { if (await store.set('reglages', 'livraison', r)) { SP.toast('Réglages enregistrés.'); m.close(); } } }, 'Enregistrer'));
   }
