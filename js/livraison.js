@@ -294,7 +294,7 @@
     return h('button', { class: 'item', type: 'button', onclick: () => editBL(id) },
       h('div', { class: 'grow' }, h('div', { class: 't', text: 'BL ' + bl.numero + ' · ' + l.client }),
         h('div', { class: 's', text: [adr(l) || 'Lieu à préciser', bl.colis ? bl.colis + ' colis' : '', bl.poids ? SP.fmt(bl.poids) + ' kg' : ''].filter(Boolean).join(' · ') }),
-        bl.statut === 'livre' && bl.livraison ? h('div', { class: 's', text: ['Livré le ' + frHeure(bl.livraison.at), bl.livraison.parNom ? 'par ' + bl.livraison.parNom : '', bl.livraison.signataire ? 'réceptionné par ' + bl.livraison.signataire : ''].filter(Boolean).join(' · ') }) : null),
+        bl.statut === 'livre' && bl.livraison ? h('div', { class: 's', text: ['Livré le ' + frHeure(bl.livraison.at), bl.livraison.parNom ? 'par ' + bl.livraison.parNom : '', bl.livraison.signataire ? 'réceptionné par ' + bl.livraison.signataire : '', etatEmail(bl.livraison)].filter(Boolean).join(' · ') }) : null),
       !hasPos(l) ? h('span', { class: 'pill warn', text: 'À localiser' }) : null,
       bl.chauffeur ? h('span', { class: 'pill neutral', text: SP.auth.nom(bl.chauffeur) || 'Chauffeur' }) : null,
       h('span', { class: 'pill ' + statutBL(bl)[0], text: statutBL(bl)[1] }));
@@ -420,14 +420,53 @@
       /^data:image\/png;base64,/.test(p.signature || '') ? h('img', { src: p.signature, alt: 'Signature de ' + (p.signataire || ''), style: 'max-width:100%;border:1px solid var(--line);border-radius:8px;background:#fff' }) : h('div', { class: 'muted', text: 'Pas de signature enregistrée.' }));
     m.setActions(h('button', { class: 'btn primary', type: 'button', onclick: () => m.close() }, 'Fermer'));
   }
-  function blocLivraison(b) {
+  function blocLivraison(b, id) {
     const l = b.livraison; if (!l || b.statut === 'a-livrer') return null;
     return h('div', { class: 'pointbox' },
       h('div', { class: 'row' }, h('b', { class: 'grow', text: b.statut === 'echec' ? 'Livraison non effectuée' : 'Livraison effectuée' }), h('span', { class: 'pill ' + statutBL(b)[0], text: statutBL(b)[1] })),
       h('div', { class: 'small', text: [frHeure(l.at), l.parNom ? 'par ' + l.parNom : '', l.saisie === 'bureau' ? 'pointé depuis le bureau' : '', l.signataire ? 'réceptionné par ' + l.signataire : ''].filter(Boolean).join(' · ') }),
       l.reserves ? h('div', { class: 'small', text: 'Réserves : ' + l.reserves }) : null,
       l.commentaire ? h('div', { class: 'small', text: 'Commentaire : ' + l.commentaire }) : null,
-      l.preuve ? h('button', { class: 'btn sm', type: 'button', onclick: () => voirPreuve(l.preuve) }, SP.icon('edit'), 'Voir la signature') : null);
+      etatEmail(l) ? h('div', { class: 'small', text: etatEmail(l) }) : null,
+      b.statut === 'livre' ? h('div', { class: 'row' },
+        l.preuve ? h('button', { class: 'btn sm', type: 'button', onclick: () => voirPreuve(l.preuve) }, SP.icon('edit'), 'Voir la signature') : null,
+        h('button', { class: 'btn sm', type: 'button', onclick: async e => { const bt = e.currentTarget; bt.disabled = true; try { await SP.blsigne.telecharger(b, lieuBL(b), l.preuve ? await store.get('preuves', l.preuve) : null); } catch (x) { SP.toast('PDF impossible à créer.', true); } bt.disabled = false; } }, SP.icon('doc'), 'BL signé en PDF'),
+        id ? h('button', { class: 'btn sm', type: 'button', onclick: () => demanderEnvoi(id, b) }, SP.icon('upload'), l.email && l.email.etat === 'envoye' ? 'Renvoyer par e-mail' : 'Envoyer par e-mail') : null) : null);
+  }
+
+  /* ---------- envoi du BL signé au client ---------- */
+  function etatEmail(l) {
+    const e = l && l.email; if (!e) return '';
+    return e.etat === 'envoye' ? 'BL signé envoyé à ' + e.a : e.etat === 'attente' ? 'envoi du BL signé en cours' : 'BL signé non envoyé à ' + e.a + (e.motif ? ' (' + e.motif + ')' : '');
+  }
+  /* faits : [{id, d}] BL déjà enregistrés ; met à jour leur état d'envoi et mémorise l'adresse sur le point de livraison */
+  async function envoyerBLSigne(faits, lieu, preuve, email, memoriser) {
+    const r = await SP.blsigne.envoyer(faits.map(x => x.d), lieu, preuve, email);
+    const etat = { a: email, etat: r.ok ? 'envoye' : 'echec', at: new Date().toISOString() }; if (!r.ok) etat.motif = String(r.message || '').slice(0, 120);
+    for (const x of faits) { const d = JSON.parse(JSON.stringify(x.d)); d.livraison = Object.assign({}, d.livraison, { email: etat }); await store.update('bls', x.id, d); }
+    SP.toast(r.ok ? 'BL signé envoyé à ' + email + '.' : 'BL signé non envoyé : ' + r.message + ' Le bureau pourra le renvoyer.', !r.ok);
+    const k = String(lieu.key || '').match(/^p:(.+):([^:]+)$/);
+    if (memoriser && k && email !== (lieu.email || '')) {
+      if (SP.sb) { try { await SP.sb.rpc('sp_email_point', { p_client: k[1], p_point: k[2], p_email: email }); } catch (e) { /* mémorisation facultative */ } }
+      else { const c = S && S.clients.get(k[1]); const p = c && (c.points || []).find(x => x.id === k[2]); if (p) p.email = email; }
+    }
+    return r.ok;
+  }
+  function demanderEnvoi(id, b) {
+    const lieu = lieuBL(b), l = b.livraison || {};
+    const m = SP.modal({ titre: 'Envoyer le BL signé' });
+    const mail = h('input', { class: 'input', id: 'env-email', type: 'text', inputmode: 'email', autocapitalize: 'off', value: (l.email && l.email.a) || lieu.email || '', placeholder: 'reception@client.fr' });
+    m.body.append(h('div', { class: 'small muted', text: 'BL ' + b.numero + ' · ' + lieu.client + '. Le client reçoit le BL signé en pièce jointe (PDF). Plusieurs adresses possibles, séparées par une virgule.' }),
+      h('label', { class: 'field' }, h('span', { text: 'E-mail du client' }), mail));
+    const ok = h('button', { class: 'btn primary', type: 'button', onclick: async () => {
+      const email = mail.value.trim();
+      if (!SP.blsigne.valides(email)) { SP.toast('Adresse e-mail invalide.', true); return; }
+      ok.disabled = true; ok.textContent = 'Envoi…';
+      const d = JSON.parse(JSON.stringify(b)); delete d.id;
+      const fait = await envoyerBLSigne([{ id, d }], lieu, l.preuve ? await store.get('preuves', l.preuve) : null, email, true);
+      if (fait) { m.close(); document.getElementById('sp-layers').replaceChildren(); } else { ok.disabled = false; ok.textContent = 'Envoyer'; }
+    } }, 'Envoyer');
+    m.setActions(h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Annuler'), ok);
   }
 
   /* ---------- Ma tournée : l'écran des chauffeurs ---------- */
@@ -503,7 +542,7 @@
           pillStop(s)),
         s.bls.filter(b => contenuBL(b)).map(b => h('div', { class: 'pointbox', style: 'padding:8px 10px;gap:4px' }, h('b', { class: 'small', text: 'BL ' + b.numero }), contenuBL(b))),
         s.bls.filter(b => b.note).map(b => h('div', { class: 'notice info', text: 'BL ' + b.numero + ' : ' + b.note })),
-        s.fait ? h('div', { class: 'small muted', text: [frHeure(l0.at), l0.signataire ? 'réceptionné par ' + l0.signataire : '', l0.reserves ? 'réserves : ' + l0.reserves : '', l0.commentaire || ''].filter(Boolean).join(' · ') }) : null,
+        s.fait ? h('div', { class: 'small muted', text: [frHeure(l0.at), l0.signataire ? 'réceptionné par ' + l0.signataire : '', l0.reserves ? 'réserves : ' + l0.reserves : '', l0.commentaire || '', etatEmail(l0)].filter(Boolean).join(' · ') }) : null,
         h('div', { class: 'row' },
           dest ? h('a', { class: 'btn', href: 'https://www.google.com/maps/dir/?' + new URLSearchParams({ api: '1', destination: dest, travelmode: 'driving' }).toString(), target: '_blank', rel: 'noopener' }, SP.icon('pin'), 'GPS') : null,
           s.fait ? h('button', { class: 'btn', type: 'button', onclick: () => feuilleLivraison(s) }, SP.icon('edit'), 'Corriger')
@@ -512,8 +551,9 @@
   }
   async function enregistrerLivraison(stop, statut, infos) {
     const base = { at: new Date().toISOString(), par: SP.auth.profil.id, parNom: SP.auth.profil.nom || '' };
-    const jobs = stop.bls.map(b => () => { const d = Object.assign({}, b); delete d.id; d.statut = statut; d.livraison = Object.assign({}, base, infos); d.maj = base.at; return store.update('bls', b.id, d); });
-    return (await store.batch(jobs)) === jobs.length;
+    const faits = stop.bls.map(b => { const d = Object.assign({}, b); delete d.id; d.statut = statut; d.livraison = Object.assign({}, base, infos); d.maj = base.at; return { id: b.id, d }; });
+    const jobs = faits.map(x => () => store.update('bls', x.id, x.d));
+    return (await store.batch(jobs)) === jobs.length ? faits : null;
   }
   function feuilleLivraison(stop) {
     const m = SP.modal({ titre: 'Livraison : ' + stop.lieu.client, verrou: true });
@@ -528,20 +568,27 @@
     cv.addEventListener('pointerdown', e => { e.preventDefault(); cv.setPointerCapture(e.pointerId); last = pos(e); ctx.beginPath(); ctx.arc(last[0], last[1], 1.100, 0, 6.300); ctx.fillStyle = '#14263A'; ctx.fill(); signe = true; });
     cv.addEventListener('pointermove', e => { if (!last) return; const p = pos(e); ctx.beginPath(); ctx.moveTo(last[0], last[1]); ctx.lineTo(p[0], p[1]); ctx.stroke(); last = p; });
     const fin = () => { last = null; }; cv.addEventListener('pointerup', fin); cv.addEventListener('pointercancel', fin);
+    const mail = h('input', { class: 'input', id: 'lv-email', type: 'text', inputmode: 'email', autocomplete: 'off', autocapitalize: 'off', placeholder: 'reception@client.fr', value: stop.lieu.email || '' });
     m.body.append(
       h('div', { class: 'small muted', text: stop.bls.map(b => 'BL ' + b.numero).join(', ') + ' · ' + adr(stop.lieu) }),
       h('label', { class: 'field' }, h('span', { text: 'Personne qui réceptionne *' }), nom),
+      h('label', { class: 'field' }, h('span', { text: 'E-mail du client pour recevoir le BL signé' }), mail),
+      h('div', { class: 'small muted', style: 'margin-top:-8px', text: stop.lieu.email ? 'Adresse enregistrée pour ce client : corrigez-la si besoin.' : 'Demandez l\'adresse au client : elle sera mémorisée pour les prochaines livraisons. Laissez vide s\'il n\'en veut pas.' }),
       h('label', { class: 'row', for: 'lv-avec-reserves' }, avec, h('span', { text: 'Le client émet des réserves' })), res,
       h('div', { class: 'field' }, h('div', { class: 'row' }, h('span', { class: 'grow', text: 'Signature du client *' }), h('button', { class: 'btn sm', type: 'button', onclick: taille }, 'Effacer')), cv));
     const ok = h('button', { class: 'btn primary', type: 'button', onclick: async () => {
       if (!nom.value.trim()) { SP.toast('Indiquez le nom de la personne qui réceptionne.', true); return; }
       if (!signe) { SP.toast('Faites signer le client dans le cadre blanc.', true); return; }
       if (avec.checked && !res.value.trim()) { SP.toast('Décrivez les réserves du client.', true); return; }
+      const email = mail.value.trim();
+      if (email && !SP.blsigne.valides(email)) { SP.toast('L\'adresse e-mail du client n\'est pas valide. Corrigez-la ou videz le champ.', true); return; }
       ok.disabled = true;
       const pid = store.newId(), reserves = avec.checked ? res.value.trim() : '';
       const preuve = { bl: stop.bls.map(b => b.id).join(','), date: S.date, client: stop.lieu.client, lieu: adr(stop.lieu), signataire: nom.value.trim(), reserves, signature: cv.toDataURL('image/png'), at: new Date().toISOString(), par: SP.auth.profil.id, parNom: SP.auth.profil.nom || '' };
-      if (await store.insert('preuves', pid, preuve) && await enregistrerLivraison(stop, 'livre', { signataire: preuve.signataire, reserves, preuve: pid })) { SP.toast('Livraison enregistrée.'); m.close(); }
-      else ok.disabled = false;
+      const faits = (await store.insert('preuves', pid, preuve)) && await enregistrerLivraison(stop, 'livre', Object.assign({ signataire: preuve.signataire, reserves, preuve: pid }, email ? { email: { a: email, etat: 'attente' } } : {}));
+      if (!faits) { ok.disabled = false; return; }
+      SP.toast(email ? 'Livraison enregistrée. Envoi du BL signé au client…' : 'Livraison enregistrée.'); m.close();
+      if (email) envoyerBLSigne(faits, stop.lieu, preuve, email, true);
     } }, 'Valider la livraison');
     m.setActions(h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Annuler'), ok);
     requestAnimationFrame(taille);
@@ -640,6 +687,7 @@
           f('libelle', 'Nom du point (usine, quai, entrepôt…)'),
           blocAdresse(p, 'pt' + n),
           h('div', { class: 'fgrid' }, f('contact', 'Contact sur place'), f('tel', 'Téléphone')),
+          f('email', 'E-mail pour l\'envoi du BL signé'),
           f('horaires', 'Horaires de réception et consignes'));
       }), h('button', { class: 'btn', type: 'button', onclick: () => { c.points.push({ id: SP.uid(), libelle: '' }); points(); } }, SP.icon('plus'), 'Ajouter un point de livraison'));
     }
@@ -712,7 +760,7 @@
       h('div', { class: 'fgrid' }, inp('numero', 'N° de BL *', neuf ? {} : { disabled: true }), inp('date', 'Date de livraison', { type: 'date' }),
         h('label', { class: 'field' }, h('span', { text: 'Départ' }), siteSel),
         h('label', { class: 'field' }, h('span', { text: 'Chauffeur' }), chSel)),
-      blocLivraison(b), zClient, zLieu,
+      blocLivraison(b, id), zClient, zLieu,
       contenuBL(b) ? h('div', { class: 'pointbox' }, h('b', { text: 'Contenu du BL' }), contenuBL(b)) : null,
       h('div', { class: 'fgrid' }, inp('colis', 'Nombre de colis', { inputmode: 'numeric' }), inp('poids', 'Poids (kg)', { inputmode: 'decimal' }),
         h('label', { class: 'field' }, h('span', { text: 'Statut' }), statSel)),
