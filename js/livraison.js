@@ -17,7 +17,7 @@
   function mount(main) {
     S = {
       tab: prefs.get('lv.tab', 'tournee'), site: prefs.get('lv.site', 'genas'), date: SP.today(), vueBL: 'jour',
-      chauffeur: '', clients: new Map(), blsJour: new Map(), attente: new Map(), echecs: new Map(), tournees: new Map(), reglages: {},
+      chauffeur: '', clients: new Map(), blsJour: new Map(), attente: new Map(), echecs: new Map(), livres: null, subLivres: false, filtreBL: '', maxLivres: 60, tournees: new Map(), reglages: {},
       charge: { clients: false, bls: false }, lent: false, sel: null, filtre: '', map: null, subs: [], subsDate: []
     };
     if (!SITES[S.site]) S.site = 'genas';
@@ -278,21 +278,23 @@
   /* --- Bons de livraison --- */
   function buildBL() {
     const P = S.pane;
-    P.seg = h('div', { class: 'seg' }, [['jour', 'Jour affiché'], ['attente', 'Tous à livrer'], ['echecs', 'Non livrés']].map(v =>
+    P.seg = h('div', { class: 'seg' }, [['jour', 'Du jour'], ['attente', 'À livrer'], ['echecs', 'Non livrés'], ['livres', 'Livrés']].map(v =>
       h('button', { type: 'button', 'data-v': v[0], onclick: () => { S.vueBL = v[0]; drawBL(); } }, v[1])));
     P.liste = h('div', { class: 'stack' });
+    P.cherche = h('input', { class: 'input', id: 'bl-cherche', type: 'search', placeholder: 'Chercher un BL livré : numéro, client, ville, commande', value: S.filtreBL, oninput: () => { S.filtreBL = P.cherche.value; S.maxLivres = 60; drawBL(); } });
     S.el.body.appendChild(h('div', { class: 'pane' },
       h('div', { class: 'pane-head' }, h('h2', { text: 'Bons de livraison' }), P.seg,
         h('button', { class: 'btn', type: 'button', onclick: importBL }, SP.icon('upload'), 'Importer Excel'),
         h('button', { class: 'btn', type: 'button', onclick: () => editBL(null) }, SP.icon('plus'), 'Nouveau BL'),
         h('button', { class: 'btn primary', type: 'button', onclick: importPDF }, SP.icon('doc'), 'Lire des BL en PDF')),
-      P.liste));
+      P.cherche, P.liste));
   }
   function ligneBL(id, bl) {
     const l = lieuBL(bl);
     return h('button', { class: 'item', type: 'button', onclick: () => editBL(id) },
       h('div', { class: 'grow' }, h('div', { class: 't', text: 'BL ' + bl.numero + ' · ' + l.client }),
-        h('div', { class: 's', text: [adr(l) || 'Lieu à préciser', bl.colis ? bl.colis + ' colis' : '', bl.poids ? SP.fmt(bl.poids) + ' kg' : ''].filter(Boolean).join(' · ') })),
+        h('div', { class: 's', text: [adr(l) || 'Lieu à préciser', bl.colis ? bl.colis + ' colis' : '', bl.poids ? SP.fmt(bl.poids) + ' kg' : ''].filter(Boolean).join(' · ') }),
+        bl.statut === 'livre' && bl.livraison ? h('div', { class: 's', text: ['Livré le ' + frHeure(bl.livraison.at), bl.livraison.parNom ? 'par ' + bl.livraison.parNom : '', bl.livraison.signataire ? 'réceptionné par ' + bl.livraison.signataire : ''].filter(Boolean).join(' · ') }) : null),
       !hasPos(l) ? h('span', { class: 'pill warn', text: 'À localiser' }) : null,
       bl.chauffeur ? h('span', { class: 'pill neutral', text: SP.auth.nom(bl.chauffeur) || 'Chauffeur' }) : null,
       h('span', { class: 'pill ' + statutBL(bl)[0], text: statutBL(bl)[1] }));
@@ -306,6 +308,23 @@
       const rows = [...S.blsJour].filter(e => (e[1].site || 'genas') === S.site).sort(tri);
       out.push(h('div', { class: 'daysep', text: SP.frDate(S.date) + ' · départ ' + SITES[S.site].nom }));
       out.push(rows.length ? h('div', { class: 'list' }, rows.map(e => ligneBL(e[0], e[1]))) : h('div', { class: 'card empty', text: 'Aucun BL pour ce jour et ce site.' }));
+    } else if (S.vueBL === 'livres') {
+      if (!S.subLivres) { const st = S; S.subLivres = true; S.subs.push(store.watch({ coll: 'bls', where: ['statut', '==', 'livre'] }, m => { if (m) { st.livres = m; refresh(); } })); }
+      if (!S.livres) out.push(h('div', { class: 'empty', text: 'Chargement des BL livrés…' }));
+      else {
+        const f = SP.norm(S.filtreBL);
+        const rows = [...S.livres].filter(e => { if (!f) return true; const b = e[1], l = lieuBL(b); return SP.norm([b.numero, l.client, l.libelle, l.ville, l.cp, b.commande, (b.livraison || {}).signataire].join(' ')).indexOf(f) >= 0; })
+          .sort((a, b) => String(b[1].date || '').localeCompare(String(a[1].date || '')) || tri(a, b));
+        out.push(h('div', { class: 'small muted', text: rows.length + ' BL livré' + (rows.length > 1 ? 's' : '') + (f ? ' pour cette recherche' : ' au total') + ', du plus récent au plus ancien. Ouvrez un BL pour voir la signature.' }));
+        if (!rows.length) out.push(h('div', { class: 'card empty', text: f ? 'Aucun BL livré ne correspond à cette recherche.' : 'Aucun BL livré pour l\'instant.' }));
+        let jour = null, liste = null;
+        rows.slice(0, S.maxLivres).forEach(e => {
+          const d = e[1].date || '';
+          if (d !== jour) { jour = d; out.push(h('div', { class: 'daysep', text: SP.frDate(d) || 'Sans date' })); liste = h('div', { class: 'list' }); out.push(liste); }
+          liste.appendChild(ligneBL(e[0], e[1]));
+        });
+        if (rows.length > S.maxLivres) out.push(h('button', { class: 'btn', type: 'button', onclick: () => { S.maxLivres += 60; drawBL(); } }, 'Afficher les ' + Math.min(60, rows.length - S.maxLivres) + ' suivants'));
+      }
     } else {
       const parJour = new Map();
       [...(S.vueBL === 'echecs' ? S.echecs : S.attente)].forEach(e => { const d = e[1].date || ''; if (!parJour.has(d)) parJour.set(d, []); parJour.get(d).push(e); });
@@ -317,6 +336,7 @@
         out.push(h('div', { class: 'list' }, parJour.get(d).sort(tri).map(e => ligneBL(e[0], e[1]))));
       });
     }
+    P.cherche.style.display = S.vueBL === 'livres' ? '' : 'none';
     P.liste.replaceChildren(...out);
   }
 
