@@ -126,16 +126,17 @@
   const cfg = window.SP_CONFIG || {};
   const sb = SP.sb = (cfg.url && cfg.cle && window.supabase) ? window.supabase.createClient(cfg.url, cfg.cle) : null;
   const store = SP.store = { mode: sb ? 'partage' : 'local' };
-  const COLS = { clients: ['demo'], bls: ['date', 'statut', 'site', 'chauffeur', 'demo'], tournees: ['date', 'site', 'chauffeur'], reglages: [], preuves: ['bl', 'date'] };
+  const COLS = { clients: ['demo'], bls: ['date', 'statut', 'site', 'chauffeur', 'demo'], tournees: ['date', 'site', 'chauffeur'], reglages: [], preuves: ['bl', 'date'], fabrications: ['date', 'site', 'statut'] };
   const mem = {}, memSubs = new Set(), live = new Set(), touchT = {};
   let chanN = 0;
 
   function memColl(c) { return mem[c] || (mem[c] = new Map()); }
   function match(data, where) { return !where || data[where[0]] === where[2]; }
+  function entre(data, e) { if (!e) return true; const v = String(data[e[0]] == null ? '' : data[e[0]]); return v >= e[1] && v <= e[2]; }
   function memEmit(coll) { memSubs.forEach(s => { if (s.q.coll === coll) memDeliver(s); }); }
   function memDeliver(s) {
     const out = new Map();
-    memColl(s.q.coll).forEach((d, id) => { if (match(d, s.q.where)) out.set(id, d); });
+    memColl(s.q.coll).forEach((d, id) => { if (match(d, s.q.where) && entre(d, s.q.entre)) out.set(id, d); });
     s.cb(out, { ok: true });
   }
   function clean(data) { return JSON.parse(JSON.stringify(data)); }
@@ -149,6 +150,7 @@
     for (let from = 0; ; from += 1000) {
       let r = sb.from(q.coll).select('id,data').order('id').range(from, from + 999);
       if (q.where) r = r.eq(q.where[0], q.where[2]);
+      if (q.entre) r = r.gte(q.entre[0], q.entre[1]).lte(q.entre[0], q.entre[2]);
       const res = await r;
       if (res.error) return null;
       res.data.forEach(x => out.set(x.id, x.data));
@@ -159,7 +161,7 @@
   function touch(coll) { clearTimeout(touchT[coll]); touchT[coll] = setTimeout(() => live.forEach(s => { if (s.coll === coll) s.load(); }), 250); }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) live.forEach(s => s.load()); });
 
-  /* q = {coll, where:[champ,'==',valeur]} ; cb(Map id→données, {ok}) ou cb(null, {erreur}) */
+  /* q = {coll, where:[champ,'==',valeur], entre:[champ,min,max]} ; cb(Map id→données, {ok}) ou cb(null, {erreur}) */
   store.watch = function (q, cb) {
     if (!sb) { const s = { q, cb }; memSubs.add(s); setTimeout(() => { if (memSubs.has(s)) memDeliver(s); }, 0); return () => memSubs.delete(s); }
     let dead = false, t = null, busy = false, again = false;

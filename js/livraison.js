@@ -621,7 +621,7 @@
       complet.disabled = true; const avant = complet.lastChild.textContent; complet.lastChild.textContent = 'Préparation…';
       try {
         const out = { application: 'SP WORK', version: 1, date: new Date().toISOString(), tables: {} }; let n = 0;
-        for (const c of ['clients', 'bls', 'tournees', 'reglages', 'preuves']) { const m = await store.query(c); out.tables[c] = [...m].map(e => ({ id: e[0], data: e[1] })); n += m.size; }
+        for (const c of ['clients', 'bls', 'tournees', 'reglages', 'preuves', 'fabrications']) { const m = await store.query(c); out.tables[c] = [...m].map(e => ({ id: e[0], data: e[1] })); n += m.size; }
         out.tables.profils = [...SP.auth.profils.values()];
         telechargerFichier('spwork-sauvegarde-' + SP.today() + '.json', JSON.stringify(out), 'application/json');
         prefs.set('sauvegarde', out.date); maj();
@@ -648,7 +648,7 @@
       liste.disabled = false;
     } }, SP.icon('chart'), 'Liste des BL pour Excel');
     return h('div', { class: 'stack' }, h('b', { text: 'Sauvegarde des données' }),
-      h('div', { class: 'small muted', text: 'La sauvegarde complète contient les clients, les BL, les tournées, les signatures et les comptes, dans un seul fichier. Téléchargez-la chaque semaine et rangez-la dans un dossier de l\'entreprise : elle permet de reconstruire la base en cas de perte. La liste pour Excel sert à consulter ou analyser les livraisons.' }),
+      h('div', { class: 'small muted', text: 'La sauvegarde complète contient les clients, les BL, les tournées, les signatures, le planning de l\'atelier et les comptes, dans un seul fichier. Téléchargez-la chaque semaine et rangez-la dans un dossier de l\'entreprise : elle permet de reconstruire la base en cas de perte. La liste pour Excel sert à consulter ou analyser les livraisons.' }),
       h('div', { class: 'row' }, complet, liste), info);
   }
 
