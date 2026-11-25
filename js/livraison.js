@@ -748,7 +748,7 @@
   }
 
   /* ---------- fiche BL ---------- */
-  const blId = numero => 'bl-' + String(numero).trim().replace(/[^A-Za-z0-9_-]+/g, '-').slice(0, 80);
+  const blId = SP.blId = numero => 'bl-' + String(numero).trim().replace(/[^A-Za-z0-9_-]+/g, '-').slice(0, 80);
   async function editBL(id) {
     const src = id ? (S.blsJour.get(id) || S.attente.get(id) || await store.get('bls', id)) : null;
     if (id && !src) { SP.toast('Ce BL n\'existe plus.', true); return; }

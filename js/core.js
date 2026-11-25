@@ -81,6 +81,33 @@
   SP.fmt = function (n, dec) { return Number(n || 0).toLocaleString('fr-FR', { maximumFractionDigits: dec || 0, minimumFractionDigits: dec || 0 }); };
   SP.uid = function () { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); };
 
+  /* ---------- curseur « cloueur pneumatique » ----------
+     Remplace la main pour tout ce qui se saisit et se déplace (cartes du Planning, caisse de l'accueil, carte de Livraison).
+     Liseré blanc autour d'un trait foncé : visible sur fond clair comme sur fond sombre. Le point actif est la pointe du clou. */
+  (function () {
+    const traits = tir => [
+      '<path d="M9 7h26a4 4 0 0 1 4 4v3a4 4 0 0 1-4 4H9z" fill="#E03A14"/>', // corps
+      '<rect x="37" y="8" width="4" height="9" rx="1.5" fill="#4B5157"/>', // culasse
+      '<path d="M26 17h8l-2 16h-7z" fill="#4B5157"/>', // poignée
+      '<path d="M24 19h2v' + (tir ? '3' : '5') + 'h-2z" fill="#26303A"/>', // gâchette
+      '<path d="M5 6h7v27H5z" fill="#4B5157"/>', // tête de frappe
+      '<path d="M11 28l17 4v4l-17-4z" fill="#9AA3AA"/>', // chargeur
+      '<path d="M7 33h3v5H7z" fill="#26303A"/>', // nez
+      '<path d="M13 10h20" stroke="#FFFFFF" stroke-width="1.6" stroke-linecap="round" fill="none"/>' // filet blanc
+    ].join('');
+    const clou = '<path d="M8.5 38v7" stroke="#9AA3AA" stroke-width="1.6"/><path d="M3 41l-2 1M14 41l2 1M4 46l-2 1M13 46l2 1" stroke="#E03A14" stroke-width="1.6" stroke-linecap="round"/>';
+    const svg = tir => '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">'
+      + '<g stroke="#FFFFFF" stroke-width="4" stroke-linejoin="round" fill="#FFFFFF">' + traits(tir).replace(/fill="[^"]*"/g, '') + (tir ? clou : '') + '</g>'
+      + '<g stroke="#1E252C" stroke-width="1.3" stroke-linejoin="round">' + traits(tir) + (tir ? clou : '') + '</g></svg>';
+    const url = (tir, repli) => 'url("data:image/svg+xml,' + encodeURIComponent(svg(tir)) + '") 8 ' + (tir ? 45 : 39) + ', ' + repli;
+    const prise = url(false, 'grab'), tenu = url(true, 'grabbing');
+    SP.curseur = { prise, tenu };
+    const st = document.createElement('style');
+    st.textContent = '.pl-card[draggable="true"],.home3d canvas,.map{cursor:' + prise + '}'
+      + '.pl-card[draggable="true"]:active,.home3d canvas:active,.map:active{cursor:' + tenu + '}';
+    document.head.appendChild(st);
+  })();
+
   /* ---------- messages ---------- */
   SP.toast = function (msg, err) {
     const t = h('div', { class: 'toast' + (err ? ' err' : ''), text: msg });
