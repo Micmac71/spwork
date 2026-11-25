@@ -191,6 +191,43 @@ textarea.input{min-height:76px;resize:vertical}
 }
 @media (max-width:620px){#ch-qui{flex:1 1 100%;max-width:none !important}}
 
+/* planning */
+.pl-titre{font-family:var(--font-display);font-size:1.15rem;font-weight:700;white-space:nowrap}
+.pl-grid{display:grid;grid-template-columns:repeat(var(--n,1),minmax(0,1fr));gap:8px}
+.pl-dh{font-family:var(--font-display);font-size:1.05rem;font-weight:700;padding:4px 6px;border-bottom:3px solid var(--line)}
+.pl-dh.auj{border-bottom-color:var(--accent);color:var(--accent)}
+.pl-jour{font-size:1.35rem}
+.pl-band{grid-column:1/-1;display:flex;align-items:center;gap:8px;margin-top:8px;font-family:var(--font-display);font-size:1rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.pl-band .small{font-family:var(--font-body);font-weight:500;text-transform:none;letter-spacing:0}
+.pl-cell{display:flex;flex-direction:column;gap:6px;padding:6px;min-height:70px;border-radius:var(--r);background:var(--surface-2);border:1px dashed var(--line)}
+.pl-cell.auj{border-style:solid;border-color:var(--muted)}
+.pl-cell.over{border-style:solid;border-color:var(--accent);background:var(--surface)}
+.pl-vide{font-size:.82rem;color:var(--muted);padding:6px 4px}
+.pl-card{display:flex;flex-direction:column;gap:6px;padding:8px;border-radius:8px;background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--brand);min-width:0}
+.pl-card.fab{border-left-color:var(--accent)}
+.pl-card.fait{opacity:.72}
+.pl-card.prise{opacity:.4}
+.pl-card[draggable="true"]{cursor:grab}
+.pl-lien{display:flex;flex-direction:column;gap:2px;border:0;background:none;padding:0;text-align:left;color:var(--ink);min-width:0;width:100%}
+.pl-card .t{font-weight:700;line-height:1.2;overflow-wrap:anywhere}
+.pl-card .s{font-size:.84rem;color:var(--muted);line-height:1.25;overflow-wrap:anywhere}
+.pl-pills{display:flex;gap:4px;flex-wrap:wrap}
+.pl-pills .pill{white-space:normal}
+.pl-etat{min-height:28px;padding:2px 11px;border-color:currentColor}
+.pl-add{display:flex;align-items:center;justify-content:center;gap:6px;min-height:36px;margin-top:auto;border:0;border-radius:8px;background:none;color:var(--muted);font-size:.86rem;font-weight:600}
+.pl-add:hover{background:var(--surface);color:var(--ink)}
+.pl-add svg{width:16px;height:16px}
+.pl-retard{display:flex;flex-direction:column;gap:8px;padding:10px;border-radius:var(--r);background:var(--crit-bg);border:1px solid var(--crit)}
+.pl-strip{display:flex;gap:6px}
+.pl-strip button{flex:1;display:flex;flex-direction:column;align-items:center;gap:1px;padding:6px 2px 7px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--muted);font-size:.78rem;text-transform:capitalize}
+.pl-strip button b{font-size:1.1rem;color:var(--ink);font-family:var(--font-display)}
+.pl-strip button i{width:6px;height:6px;border-radius:50%;background:transparent}
+.pl-strip button i.plein{background:var(--accent)}
+.pl-strip button.auj{border-color:var(--accent)}
+.pl-strip button[aria-pressed="true"]{background:var(--brand);border-color:var(--brand);color:var(--on-brand)}
+.pl-strip button[aria-pressed="true"] b{color:var(--on-brand)}
+@media (max-width:759px){.pl-titre{order:5;flex-basis:100%;font-size:1rem}.pl-cell{min-height:56px}}
+
 /* accueil 3D : le carton SP Emballage et les apps qui en sortent */
 .home-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
 .home3d{position:relative;height:100%;min-height:440px;overflow:hidden;
