@@ -60,11 +60,26 @@
     });
   }
   function chargerThree() {
-    if (window.THREE && window.THREE.RoundedBoxGeometry) return Promise.resolve();
+    if (window.THREE && window.THREE.RoundedBoxGeometry && window.THREE.lireGLB) return Promise.resolve();
     if (!threeP) threeP = (window.THREE ? Promise.resolve() : charger('js/vendor/three.min.js'))
       .then(() => window.THREE.RoundedBoxGeometry ? null : charger('js/vendor/three-extras.js').catch(() => null))
+      .then(() => window.THREE.lireGLB ? null : charger('js/glb.js').catch(() => null))
       .catch(e => { threeP = null; throw e; });
     return threeP;
+  }
+  /* modèles 3D glTF (modeles/*.glb, fabriqués par outils/modeles-3d.html). Les fichiers restent en mémoire
+     pour rouvrir l'accueil sans les retélécharger ; s'ils manquent, la scène dessinée en code prend le relais. */
+  const MODELES = ['caisse', 'palette', 'camion', 'epingle', 'calendrier'];
+  let modelesP = null;
+  function chargerModeles() {
+    if (!modelesP) modelesP = Promise.all(MODELES.map(n => fetch('modeles/' + n + '.glb').then(r => r.ok ? r.arrayBuffer() : null).catch(() => null)))
+      .then(l => { const o = {}; MODELES.forEach((n, i) => { o[n] = l[i]; }); if (!l.some(Boolean)) modelesP = null; return o; });
+    return modelesP;
+  }
+  function lireModeles(bufs) { // un objet neuf à chaque ouverture : la scène est détruite en sortant
+    const THREE = window.THREE;
+    return Promise.all(MODELES.map(n => bufs[n] && THREE.lireGLB ? THREE.lireGLB(bufs[n].slice(0)).catch(() => null) : null))
+      .then(l => { const o = {}; MODELES.forEach((n, i) => { o[n] = l[i]; }); return o; });
   }
   const descApp = id => (A_VENIR.find(a => a.id === id) || {});
 
@@ -114,13 +129,14 @@
       info.pills.clear();
       const scene = h('div', { class: 'home3d' });
       main.replaceChildren(scene);
-      chargerThree().then(() => {
+      const fichiers = chargerModeles(), attente = new Promise(ok => setTimeout(() => ok({}), 6000));
+      chargerThree().then(() => Promise.race([fichiers, attente])).then(lireModeles).then(modeles => {
         if (fini || !scene.isConnected) return;
         detruire = scene3D(scene, actives, aVenir, info, {
           ouvrir: id => SP.go(id),
           fiche: a => fiche(a),
           liste: () => { setVue('liste'); afficherTuiles(true); }
-        });
+        }, modeles);
       }).catch(() => { if (!fini) afficherTuiles(false); });
     }
     if (!webglOK()) afficherTuiles(false);
@@ -133,8 +149,9 @@
   /* =====================================================================
      Scène 3D
      ===================================================================== */
-  function scene3D(root, actives, aVenir, info, act) {
+  function scene3D(root, actives, aVenir, info, act, modeles) {
     const THREE = window.THREE;
+    modeles = modeles || {};
     const reduit = matchMedia('(prefers-reduced-motion: reduce)').matches;
     const petit = Math.min(innerWidth, innerHeight) < 700;
     const W = 2.2, D = 1.6, H = 1.4, T = 0.035, PH = 0.16;
@@ -301,8 +318,10 @@
 
     /* --- moteur --- */
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-    renderer.setPixelRatio(Math.min(devicePixelRatio, petit ? 1.75 : 2));
+    const prMax = Math.min(devicePixelRatio, petit ? 1.5 : 2); let pr = prMax;
+    renderer.setPixelRatio(pr);
     renderer.outputEncoding = THREE.sRGBEncoding;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 0.95; // rendu « photo » : hautes lumières douces
     renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.setClearColor(0x000000, 0);
         const scene = new THREE.Scene();
@@ -320,18 +339,24 @@
     soleil.shadow.mapSize.set(petit ? 1024 : 2048, petit ? 1024 : 2048);
     Object.assign(soleil.shadow.camera, { left: -5, right: 5, top: 5, bottom: -5, near: 1, far: 25 });
     soleil.shadow.bias = -0.0006; scene.add(soleil);
-    const contre = new THREE.DirectionalLight(0xA9C4DA, 0.35); contre.position.set(-6, 4, -5); scene.add(contre);
+    const contre = new THREE.DirectionalLight(0xA9C4DA, 0.55); contre.position.set(-6, 4, -5); scene.add(contre); // liseré froid sur les arêtes
+    const appoint = new THREE.DirectionalLight(0xFFE2C4, 0.25); appoint.position.set(-5, 2.5, 7); scene.add(appoint); // débouche les ombres côté caméra
 
     const sol = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.ShadowMaterial({ opacity: .2 }));
     sol.rotation.x = -Math.PI / 2; sol.receiveShadow = true; monde.add(sol);
     const Mat = (color, rough, metal) => new THREE.MeshStandardMaterial({ color, roughness: rough == null ? .85 : rough, metalness: metal || 0 });
     const ombre = m => { m.castShadow = true; m.receiveShadow = true; return m; };
+    // modèle glTF : ombres portées et reçues (sauf les marquages transparents)
+    const ombreTout = g => { g.traverse(o => { if (o.isMesh) { o.receiveShadow = true; o.castShadow = !(o.material && o.material.transparent); } }); return g; };
 
     // palette
-    const mPal = Mat(0xCDA676, .9), mPalF = Mat(0xA9824F, .9);
-    for (let i = 0; i < 5; i++) { const b = ombre(new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.03, 0.34), mPal)); b.position.set(0, PH - 0.015, -1.1 + 0.17 + i * (2.2 - 0.34) / 4); monde.add(b); }
-    for (const px of [-1.25, 0, 1.25]) for (const pz of [-0.95, 0, 0.95]) { const k = ombre(new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.1, 0.22), mPalF)); k.position.set(px, 0.08, pz); monde.add(k); }
-    for (const pz of [-0.95, 0, 0.95]) { const b = ombre(new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.03, 0.22), mPal)); b.position.set(0, 0.015, pz); monde.add(b); }
+    if (modeles.palette) monde.add(ombreTout(modeles.palette));
+    else {
+      const mPal = Mat(0xCDA676, .9), mPalF = Mat(0xA9824F, .9);
+      for (let i = 0; i < 5; i++) { const b = ombre(new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.03, 0.34), mPal)); b.position.set(0, PH - 0.015, -1.1 + 0.17 + i * (2.2 - 0.34) / 4); monde.add(b); }
+      for (const px of [-1.25, 0, 1.25]) for (const pz of [-0.95, 0, 0.95]) { const k = ombre(new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.1, 0.22), mPalF)); k.position.set(px, 0.08, pz); monde.add(k); }
+      for (const pz of [-0.95, 0, 0.95]) { const b = ombre(new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.03, 0.22), mPal)); b.position.set(0, 0.015, pz); monde.add(b); }
+    }
 
     // caisse bois
     const tBois = tex(bois(512, 128)), tBoisV = tex(bois(512, 128));
@@ -348,8 +373,13 @@
     logo.onload = () => surLogo.forEach(f => f());
     surLogo.push(() => { const x = marqCanvas.getContext('2d'); x.clearRect(0, 0, marqCanvas.width, marqCanvas.height); x.drawImage(texMarquage(logo), 0, 0); marqTex.needsUpdate = true; });
 
-    const caisse = new THREE.Group(); monde.add(caisse);
-    const piece = (g, w, hh, d, x, y, z, mat) => { const o = ombre(new THREE.Mesh(new THREE.BoxGeometry(w, hh, d), mat)); o.position.set(x, y, z); g.add(o); return o; };
+    // caisse : modèle glTF (avec son nœud « couvercle ») ou, à défaut, construite en code
+    let caisse = modeles.caisse && modeles.caisse.getObjectByName('couvercle') ? ombreTout(modeles.caisse) : null;
+    let couvercle = caisse ? caisse.getObjectByName('couvercle') : null;
+    if (caisse) monde.add(caisse);
+    else {
+    caisse = new THREE.Group(); monde.add(caisse);
+    const piece =(g, w, hh, d, x, y, z, mat) => { const o = ombre(new THREE.Mesh(new THREE.BoxGeometry(w, hh, d), mat)); o.position.set(x, y, z); g.add(o); return o; };
     const NPL = 4, JEU = 0.014, HPL = (H - JEU * (NPL - 1)) / NPL, CT = 0.03, CW = 0.1;
     for (let i = 0; i < NPL; i++) {
       const y = i * (HPL + JEU) + HPL / 2;
@@ -380,7 +410,7 @@
     decal(W - 2 * CW - 0.06, H - 2 * CW - 0.04, mMarq, 0, H / 2, -D / 2 - 0.002, Math.PI);
     for (const sx of [-1, 1]) decal(D * 0.55, D * 0.55, mMarqCote, sx * (W / 2 + 0.002), H / 2, 0, sx * Math.PI / 2);
     // couvercle, articulé sur l'arête arrière
-    const couvercle = new THREE.Group(); couvercle.position.set(0, H, -D / 2 - CT); caisse.add(couvercle);
+    couvercle = new THREE.Group(); couvercle.position.set(0, H, -D / 2 - CT); caisse.add(couvercle);
     const PZ = D + 2 * CT, NC = 5, LC = (PZ - JEU * (NC - 1)) / NC;
     for (let i = 0; i < NC; i++) piece(couvercle, W + 2 * CT, T, LC, 0, T / 2, i * (LC + JEU) + LC / 2, [mPl[i % 4], mPl[i % 4], mPl[(i + 2) % 4], mIn, mPl[i % 4], mPl[i % 4]]);
     for (const bx of [-1, 0, 1]) piece(couvercle, CW, CT, PZ, bx * (W / 2 - CW / 2 - 0.02), T + CT / 2, PZ / 2, mTasV);
@@ -409,6 +439,7 @@
       groupe.add(im);
     }
     clouer(caisse, clous); clouer(couvercle, clousCouv);
+    }
     caisse.traverse(o => { o.userData.caisse = true; });
 
     // lumière intérieure, faisceau, poussières
@@ -549,7 +580,34 @@
       for (const bx of [-1, 1]) ajout(g, new THREE.BoxGeometry(taille * 0.16, 0.012, taille + 0.01), mTasV, bx * taille * 0.32, taille * 0.86 + 0.006, 0);
       return g;
     }
-    const MAQUETTES = { livraison: camion, 'ma-tournee': tournee, planning: calendrier, rh: equipe };
+    // maquettes glTF : on retrouve les pièces animées par leur nom (roues, phares, feux, épingle)
+    function camionGLB() {
+      const g = modeles.camion, roues = [], halos = []; let phare = null, feu = null;
+      g.traverse(o => {
+        if (o.name === 'roue') roues.push(o);
+        if (o.name === 'halo_phare') halos.push(o);
+        if (o.material && o.material.name === 'phare') phare = o.material;
+        if (o.material && o.material.name === 'feu') feu = o.material;
+      });
+      halos.forEach((o, i) => { const hl = halo(0xFFE2A6, 0.42); o.add(hl); halos[i] = hl; });
+      if (phare) phare.emissiveIntensity = 0.15;
+      if (feu) feu.emissiveIntensity = 0.4;
+      g.userData = { roues, phare: phare || { emissiveIntensity: 0 }, halos, feu: feu || {}, taille: 1 };
+      return ombreTout(g);
+    }
+    function tourneeGLB() {
+      const g = modeles.epingle;
+      const onde = new THREE.Mesh(new THREE.RingGeometry(0.05, 0.075, 48), new THREE.MeshBasicMaterial({ color: ACCENT, transparent: true, opacity: 0, depthWrite: false }));
+      onde.rotation.x = -Math.PI / 2; onde.position.set(0.05, 0.047, 0.02); g.add(onde);
+      g.userData = { pin: g.getObjectByName('epingle'), onde };
+      return ombreTout(g);
+    }
+    const MAQUETTES = {
+      livraison: modeles.camion ? camionGLB : camion,
+      'ma-tournee': modeles.epingle && modeles.epingle.getObjectByName('epingle') ? tourneeGLB : tournee,
+      planning: modeles.calendrier ? () => ombreTout(modeles.calendrier) : calendrier,
+      rh: equipe
+    };
 
     /* --- les apps dans la scène --- */
     const btn = (cls, enfants, onclick) => { const b = h('button', { class: 'l3d ' + cls, type: 'button', tabindex: '-1', onclick }, enfants); labels.appendChild(b); return b; };
@@ -634,10 +692,23 @@
     const v = new THREE.Vector3(), dir = new THREE.Vector3(), cible = new THREE.Vector3(), depart = new THREE.Vector3();
     const angLerp = (a, b, t) => { const d = ((b - a + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI; return a + d * t; };
 
+    // fluidité : si l'appareil peine (moins de 40 images/s), on baisse la résolution, puis on coupe les ombres
+    let cumul = 0, nImg = 0;
+    function qualite(brut) {
+      if (brut > 0.25) return; // onglet en pause ou retour d'arrière-plan : mesure ignorée
+      cumul += brut; nImg++;
+      if (cumul < 1.5) return;
+      const lent = cumul / nImg > 1 / 40; cumul = 0; nImg = 0;
+      if (!lent) return;
+      if (pr > 1) { pr = Math.max(1, pr - 0.25); renderer.setPixelRatio(pr); cadrer(); }
+      else if (soleil.castShadow) soleil.castShadow = false;
+    }
+
     function image() {
       raf = requestAnimationFrame(image);
-      const now = performance.now() / 1000, dt = Math.min(now - dernier, 1 / 30); dernier = now;
+      const now = performance.now() / 1000, brut = now - dernier, dt = Math.min(brut, 1 / 30); dernier = now;
       const t = now - t0;
+      if (t > 2) qualite(brut);
       if (!glisse) { lacet += vit; vit *= 0.93; }
       monde.rotation.y = lacet;
 
